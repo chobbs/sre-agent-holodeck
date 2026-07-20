@@ -11,6 +11,7 @@
 #   ./holodeck.sh logs [service]        # tail logs (Ctrl+C to exit)
 #   ./holodeck.sh reload-fixtures       # hot-reload fixture JSON from S3
 #   ./holodeck.sh sync-fixtures         # upload local JSON to S3 + reload
+#   ./holodeck.sh deploy                # git pull + rebuild changed containers
 
 set -uo pipefail
 
@@ -110,6 +111,16 @@ print('ok (' + ', '.join(parts) + ')')
   return $failed
 }
 
+cmd_deploy() {
+  echo "Pulling latest from GitHub..."
+  git -C "${BASE_DIR}" pull origin main || { echo "git pull failed — check remote/credentials"; exit 1; }
+  echo ""
+  echo "Rebuilding and restarting changed containers..."
+  $DC up --build -d
+  echo ""
+  cmd_status
+}
+
 cmd_sync_fixtures() {
   echo "Uploading fixture JSON to S3..."
   bash "${BASE_DIR}/scripts/sync-fixtures-to-s3.sh"
@@ -130,6 +141,7 @@ Commands:
   logs [service]       Tail logs for one service or all (Ctrl+C to exit)
   reload-fixtures      Pull fresh fixture JSON from S3 into running containers
   sync-fixtures        Upload local fixtures/ dirs to S3, then reload all
+  deploy               git pull origin main + rebuild any changed containers
 
 Services: ${SERVICES[*]}
 
@@ -146,5 +158,6 @@ case "${1:-}" in
   logs)             cmd_logs "${2:-}" ;;
   reload-fixtures)  cmd_reload_fixtures ;;
   sync-fixtures)    cmd_sync_fixtures ;;
+  deploy)           cmd_deploy ;;
   *)                show_usage; exit 1 ;;
 esac

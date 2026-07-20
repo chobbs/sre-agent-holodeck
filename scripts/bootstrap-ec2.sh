@@ -62,6 +62,27 @@ else
 fi
 
 # ── Start the stack ───────────────────────────────────────────────────────────
+# ── Git ──────────────────────────────────────────────────────────────────
+echo "[bootstrap] Installing git..."
+sudo dnf install -y git -q
+git config --global init.defaultBranch main
+echo "[bootstrap] Git $(git --version) installed."
+
+# ── Wire up git repo ────────────────────────────────────────────────────────
+HOLODECK_DIR="${HOME}/holodeck"
+if [ ! -d "${HOLODECK_DIR}/.git" ]; then
+  echo "[bootstrap] Initializing git repo in ${HOLODECK_DIR}..."
+  git -C "${HOLODECK_DIR}" init
+  git -C "${HOLODECK_DIR}" remote add origin https://github.com/chobbs/sre-agent-holodeck.git
+  git -C "${HOLODECK_DIR}" fetch origin main
+  git -C "${HOLODECK_DIR}" reset origin/main        # mixed reset: index = origin/main, working tree unchanged
+  git -C "${HOLODECK_DIR}" branch -m main 2>/dev/null || true
+  git -C "${HOLODECK_DIR}" branch --set-upstream-to=origin/main main
+  echo "[bootstrap] Git repo ready. Future deploys: bash ~/holodeck/holodeck.sh deploy"
+else
+  echo "[bootstrap] Git repo already initialized — skipping."
+fi
+
 echo "[bootstrap] Building and starting Holodeck stack..."
 cd "${HOME}/holodeck"
 sudo docker compose up --build -d

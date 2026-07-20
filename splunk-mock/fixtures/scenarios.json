@@ -1,0 +1,74 @@
+{
+  "default": {
+    "description": "Fallback scenario when no keyword matches",
+    "host": "app-server-01",
+    "sourcetype": "generic_log",
+    "logs": [
+      { "offset_seconds": -300, "level": "info", "line": "healthcheck passed on all nodes" },
+      { "offset_seconds": -240, "level": "info", "line": "request completed status=200 latency_ms=42" },
+      { "offset_seconds": -120, "level": "info", "line": "cache hit ratio=0.94" },
+      { "offset_seconds": -30,  "level": "info", "line": "request completed status=200 latency_ms=38" }
+    ]
+  },
+  "suspicious-login": {
+    "description": "Brute-force SSH login attempts culminating in a successful root login from an external IP",
+    "host": "auth-server-01",
+    "sourcetype": "linux_secure",
+    "logs": [
+      { "offset_seconds": -600, "level": "info",  "line": "sshd[2213]: Accepted password for svc_deploy from 10.0.4.12 port 51322 ssh2" },
+      { "offset_seconds": -420, "level": "warn",  "line": "sshd[2288]: Failed password for root from 185.220.101.47 port 40410 ssh2" },
+      { "offset_seconds": -415, "level": "warn",  "line": "sshd[2289]: Failed password for root from 185.220.101.47 port 40418 ssh2" },
+      { "offset_seconds": -380, "level": "error", "line": "sshd[2295]: Failed password for root from 185.220.101.47 port 40501 ssh2 (10th failure in 60s)" },
+      { "offset_seconds": -300, "level": "error", "line": "sshd[2310]: Accepted password for root from 185.220.101.47 port 40602 ssh2" },
+      { "offset_seconds": -295, "level": "warn",  "line": "pam_unix(sshd:session): session opened for user root by (uid=0) from 185.220.101.47" }
+    ]
+  },
+  "privilege-escalation": {
+    "description": "Unauthorized privilege escalation followed by sensitive data access and a bulk export",
+    "host": "dc-01",
+    "sourcetype": "linux_audit",
+    "logs": [
+      { "offset_seconds": -500, "level": "info",  "line": "audit: user jsmith authenticated successfully via SSO" },
+      { "offset_seconds": -360, "level": "warn",  "line": "audit: role_change event - user jsmith added to group Domain Admins by admin_svc_account" },
+      { "offset_seconds": -300, "level": "error", "line": "audit: user jsmith accessed \\\\fileserver01\\finance$\\payroll_2026.xlsx" },
+      { "offset_seconds": -240, "level": "error", "line": "audit: user jsmith exported 1204 records from HR database via bulk query" },
+      { "offset_seconds": -100, "level": "warn",  "line": "audit: role_change event flagged - admin_svc_account was not authorized to grant Domain Admins (policy violation)" }
+    ]
+  },
+  "data-exfiltration": {
+    "description": "Large outbound data transfer spike triggering a DLP block, followed by a VPN bypass attempt",
+    "host": "dlp-gateway-01",
+    "sourcetype": "dlp:incident",
+    "logs": [
+      { "offset_seconds": -550, "level": "info",  "line": "dlp: baseline outbound traffic 40MB/hr from workstation WKS-4471" },
+      { "offset_seconds": -350, "level": "warn",  "line": "dlp: outbound transfer spike detected: 2.1GB in 10 minutes from WKS-4471 to external endpoint drive.google.com" },
+      { "offset_seconds": -300, "level": "error", "line": "dlp: policy 'PII-Exfil-Block' triggered - blocked upload containing 340 SSNs to unauthorized destination" },
+      { "offset_seconds": -240, "level": "error", "line": "dlp: repeat attempt detected - user bypassed proxy via personal VPN client" },
+      { "offset_seconds": -120, "level": "warn",  "line": "dlp: incident escalated to SOC-Tier2, workstation WKS-4471 isolated" }
+    ]
+  },
+  "malware-detection": {
+    "description": "Endpoint malware detection with quarantine action and signs of lateral movement",
+    "host": "edr-console",
+    "sourcetype": "symantec:ep:proactive:file",
+    "logs": [
+      { "offset_seconds": -500, "level": "info",  "line": "edr: routine scan completed on WKS-8821, 0 threats found" },
+      { "offset_seconds": -300, "level": "warn",  "line": "edr: suspicious process spawned: powershell.exe -enc <base64> from WKS-8821" },
+      { "offset_seconds": -280, "level": "error", "line": "edr: malicious file hash matched (Trojan.GenericKD.71234512) - quarantine action taken on WKS-8821" },
+      { "offset_seconds": -200, "level": "error", "line": "edr: process svchost.exe spawned unexpected child process cmd.exe /c whoami" },
+      { "offset_seconds": -100, "level": "warn",  "line": "edr: WKS-8821 isolated from network pending investigation" }
+    ]
+  },
+  "firewall-policy-violation": {
+    "description": "Repeated blocked connections to a known-bad destination, followed by an unauthorized firewall rule change permitting the traffic",
+    "host": "fw-edge-02",
+    "sourcetype": "pan:traffic",
+    "logs": [
+      { "offset_seconds": -600, "level": "info",  "line": "traffic: allowed connection 10.0.2.15:443 -> 172.16.5.20:443 (policy: default-allow)" },
+      { "offset_seconds": -420, "level": "warn",  "line": "traffic: blocked connection 10.0.2.44 -> 91.203.145.12:443 (destination on threat-intel blacklist, policy: block-known-bad)" },
+      { "offset_seconds": -350, "level": "error", "line": "traffic: repeated blocked attempts (14x in 5 min) 10.0.2.44 -> 91.203.145.12:443" },
+      { "offset_seconds": -240, "level": "error", "line": "audit: firewall rule 'block-known-bad' modified by user contractor_acct - blacklist entry removed" },
+      { "offset_seconds": -120, "level": "warn",  "line": "traffic: allowed connection 10.0.2.44 -> 91.203.145.12:443 (previously blocked destination now permitted post rule-change)" }
+    ]
+  }
+}

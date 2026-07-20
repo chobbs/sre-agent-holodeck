@@ -1,0 +1,78 @@
+{
+  "default": {
+    "description": "Fallback scenario when no keyword matches",
+    "namespace": "prod",
+    "node": "node-worker-01",
+    "logs": [
+      { "offset_seconds": -300, "level": "info", "line": "kubelet: Node node-worker-01 status: Ready" },
+      { "offset_seconds": -240, "level": "info", "line": "kubelet: healthcheck passed on all pods" },
+      { "offset_seconds": -120, "level": "info", "line": "kubelet: routine pod sync completed" },
+      { "offset_seconds": -30,  "level": "info", "line": "kubelet: routine pod sync completed" }
+    ]
+  },
+  "payments-api-gateway": {
+    "description": "Payments API Gateway — node memory pressure causing pod evictions",
+    "technical_service": "payments-api-gateway",
+    "namespace": "prod",
+    "node": "node-gateway-07",
+    "logs": [
+      { "offset_seconds": -600, "level": "info",  "line": "kubelet: Node node-gateway-07 memory pressure: false" },
+      { "offset_seconds": -400, "level": "warn",  "line": "kubelet: Node node-gateway-07 memory pressure: true, evicting pods to reclaim resources" },
+      { "offset_seconds": -300, "level": "error", "line": "kubelet: Evicted pod prod/payments-api-gateway-7d9f6c-x2j4p, reason: MemoryPressure" },
+      { "offset_seconds": -290, "level": "error", "line": "kubelet: Evicted pod prod/payments-api-gateway-8f2a1c-p9x3q, reason: MemoryPressure" },
+      { "offset_seconds": -60,  "level": "warn",  "line": "kubelet: Node node-gateway-07 memory pressure: false, eviction cycle complete" }
+    ]
+  },
+  "payments-orchestrator-sync": {
+    "description": "Payments Orchestrator (sync) — broken image tag causing ImagePullBackOff on a canary deployment",
+    "technical_service": "payments-orchestrator-sync",
+    "namespace": "staging",
+    "node": "node-orchestrator-12",
+    "logs": [
+      { "offset_seconds": -500, "level": "info",  "line": "kubelet: Pulling image \"registry.internal/payments-orchestrator-sync:v2.4.1\"" },
+      { "offset_seconds": -350, "level": "error", "line": "kubelet: Failed to pull image \"registry.internal/payments-orchestrator-sync:v2.4.2\": manifest unknown" },
+      { "offset_seconds": -340, "level": "error", "line": "kubelet: ImagePullBackOff for pod staging/payments-orchestrator-sync-canary-99f7d" },
+      { "offset_seconds": -240, "level": "warn",  "line": "kubelet: Back-off pulling image, retrying in 5m0s" },
+      { "offset_seconds": -60,  "level": "info",  "line": "kubelet: Successfully pulled image after rollback to v2.4.1" }
+    ]
+  },
+  "idempotency-token-service": {
+    "description": "Idempotency Token Service — container repeatedly crashing, failing readiness checks",
+    "technical_service": "idempotency-token-service",
+    "namespace": "prod",
+    "node": "node-idempotency-03",
+    "logs": [
+      { "offset_seconds": -450, "level": "info",  "line": "kubelet: Started container idempotency-token-service in pod prod/idempotency-token-service-6b9c8d-t4m2z" },
+      { "offset_seconds": -400, "level": "warn",  "line": "kubelet: Container idempotency-token-service in pod idempotency-token-service-6b9c8d-t4m2z exited with code 1" },
+      { "offset_seconds": -300, "level": "error", "line": "kubelet: Back-off restarting failed container idempotency-token-service in pod idempotency-token-service-6b9c8d-t4m2z" },
+      { "offset_seconds": -200, "level": "error", "line": "kubelet: CrashLoopBackOff: container idempotency-token-service has restarted 8 times in the last 5 minutes" },
+      { "offset_seconds": -60,  "level": "warn",  "line": "kubelet: readiness probe failed for idempotency-token-service-6b9c8d-t4m2z: connection refused" }
+    ]
+  },
+  "payments-rules-engine": {
+    "description": "Payments Rules Engine — node loses kubelet heartbeat and is marked NotReady, pods rescheduled elsewhere",
+    "technical_service": "payments-rules-engine",
+    "namespace": "prod",
+    "node": "node-rules-09",
+    "logs": [
+      { "offset_seconds": -500, "level": "info",  "line": "kubelet: Node node-rules-09 status: Ready" },
+      { "offset_seconds": -300, "level": "warn",  "line": "kubelet: Node node-rules-09 has not reported status for 40s, marking NodeNotReady" },
+      { "offset_seconds": -290, "level": "error", "line": "node-controller: Node node-rules-09 status changed to NotReady, evicting pods after 300s tolerance" },
+      { "offset_seconds": -100, "level": "error", "line": "scheduler: Rescheduled 6 pods from node-rules-09 to node-rules-11" },
+      { "offset_seconds": -60,  "level": "warn",  "line": "kubelet: Node node-rules-09 rejoined cluster, status: Ready" }
+    ]
+  },
+  "service-mesh-mtls": {
+    "description": "Service Mesh / mTLS — sidecar injector Horizontal Pod Autoscaler rapidly scaling up and down due to noisy CPU metrics",
+    "technical_service": "service-mesh-mtls",
+    "namespace": "prod",
+    "node": "n/a",
+    "logs": [
+      { "offset_seconds": -400, "level": "info",  "line": "horizontal-pod-autoscaler: envoy-sidecar-injector replicas: 3 (target CPU 65%, current 58%)" },
+      { "offset_seconds": -300, "level": "warn",  "line": "horizontal-pod-autoscaler: envoy-sidecar-injector scaled up to 8 replicas (current CPU 92%)" },
+      { "offset_seconds": -240, "level": "warn",  "line": "horizontal-pod-autoscaler: envoy-sidecar-injector scaled down to 3 replicas (current CPU 40%) after 90s" },
+      { "offset_seconds": -180, "level": "error", "line": "horizontal-pod-autoscaler: envoy-sidecar-injector flapping detected - 6 scale events in 5 minutes" },
+      { "offset_seconds": -60,  "level": "warn",  "line": "horizontal-pod-autoscaler: envoy-sidecar-injector stabilization window increased to 300s" }
+    ]
+  }
+}

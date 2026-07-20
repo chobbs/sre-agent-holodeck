@@ -1,0 +1,118 @@
+services:
+
+  grafana:
+    build:
+      context: .
+      dockerfile: grafana-mock/Dockerfile
+    container_name: holodeck-grafana
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      - MOCK_API_TOKEN=${MOCK_API_TOKEN:-demo-token}
+      - PORT=3000
+      - FIXTURES_S3_BUCKET=${FIXTURES_S3_BUCKET:-}
+      - FIXTURES_S3_KEY=grafana/scenarios.json
+      - METRICS_FIXTURES_S3_KEY=grafana/metric_scenarios.json
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-2}
+    healthcheck:
+      # /api/health requires no auth — safe to use as liveness probe
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  arize:
+    build:
+      context: .
+      dockerfile: arize-mock/Dockerfile
+    container_name: holodeck-arize
+    restart: unless-stopped
+    expose:
+      - "3001"
+    environment:
+      - MOCK_API_TOKEN=${MOCK_API_TOKEN:-demo-token}
+      - PORT=3001
+      - FIXTURES_S3_BUCKET=${FIXTURES_S3_BUCKET:-}
+      - FIXTURES_S3_KEY=arize/scenarios.json
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-2}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3001/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  splunk:
+    build:
+      context: .
+      dockerfile: splunk-mock/Dockerfile
+    container_name: holodeck-splunk
+    restart: unless-stopped
+    expose:
+      - "3002"
+    environment:
+      - MOCK_API_TOKEN=${MOCK_API_TOKEN:-demo-token}
+      - PORT=3002
+      - FIXTURES_S3_BUCKET=${FIXTURES_S3_BUCKET:-}
+      - FIXTURES_S3_KEY=splunk/scenarios.json
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-2}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3002/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  elasticsearch:
+    build:
+      context: .
+      dockerfile: elasticsearch-mock/Dockerfile
+    container_name: holodeck-elasticsearch
+    restart: unless-stopped
+    expose:
+      - "3003"
+    environment:
+      - MOCK_API_TOKEN=${MOCK_API_TOKEN:-demo-token}
+      - PORT=3003
+      - FIXTURES_S3_BUCKET=${FIXTURES_S3_BUCKET:-}
+      - FIXTURES_S3_KEY=elasticsearch/scenarios.json
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-2}
+    healthcheck:
+      # elasticsearch root requires auth — use hardcoded default token for the probe
+      test: ["CMD-SHELL", "curl -sf -H 'Authorization: ApiKey demo-token' http://localhost:3003/ > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: holodeck-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3 (QUIC)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data          # Let's Encrypt certs — persists across restarts
+      - caddy_config:/config
+    depends_on:
+      - grafana
+      - arize
+      - splunk
+      - elasticsearch
+
+volumes:
+  caddy_data:
+  caddy_config:

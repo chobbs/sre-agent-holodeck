@@ -1,0 +1,35 @@
+grafana.holodeck.scsandbox.net {
+    tls {
+        issuer acme {
+            disable_http_challenge
+        }
+    }
+    reverse_proxy grafana:3000
+}
+
+arize.holodeck.scsandbox.net {
+    tls {
+        issuer acme {
+            disable_http_challenge
+        }
+    }
+    reverse_proxy arize:3001
+}
+
+splunk.holodeck.scsandbox.net {
+    tls {
+        issuer acme {
+            disable_http_challenge
+        }
+    }
+    reverse_proxy splunk:3002
+}
+
+elasticsearch.holodeck.scsandbox.net {
+    tls {
+        issuer acme {
+            disable_http_challenge
+        }
+    }
+    reverse_proxy elasticsearch:3003
+}

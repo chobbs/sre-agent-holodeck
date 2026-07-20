@@ -1,0 +1,71 @@
+{
+  "default": {
+    "description": "Fallback scenario when no keyword matches",
+    "logs": [
+      { "offset_seconds": -300, "level": "info", "line": "healthcheck passed on all nodes" },
+      { "offset_seconds": -240, "level": "info", "line": "request completed status=200 latency_ms=42" },
+      { "offset_seconds": -120, "level": "info", "line": "cache hit ratio=0.94" },
+      { "offset_seconds": -30,  "level": "info", "line": "request completed status=200 latency_ms=38" }
+    ]
+  },
+  "checkout-api": {
+    "description": "Checkout service OOM / crash scenario",
+    "labels": { "service": "checkout-api", "env": "prod" },
+    "logs": [
+      { "offset_seconds": -600, "level": "info",  "line": "checkout-api: request completed status=200 latency_ms=112" },
+      { "offset_seconds": -420, "level": "warn",  "line": "checkout-api: heap usage at 82% (threshold 80%)" },
+      { "offset_seconds": -300, "level": "warn",  "line": "checkout-api: GC pause 1200ms, heap usage 91%" },
+      { "offset_seconds": -180, "level": "error", "line": "checkout-api: OutOfMemoryError: Java heap space at CheckoutService.processOrder(CheckoutService.java:214)" },
+      { "offset_seconds": -175, "level": "error", "line": "checkout-api: container OOMKilled, restarting pod checkout-api-7d9f6c-x2j4p" },
+      { "offset_seconds": -170, "level": "info",  "line": "checkout-api: pod checkout-api-7d9f6c-x2j4p restarted, warming up" },
+      { "offset_seconds": -60,  "level": "warn",  "line": "checkout-api: heap usage at 78%, trending up" }
+    ]
+  },
+  "payments-svc": {
+    "description": "Payments service timeout / downstream dependency scenario",
+    "labels": { "service": "payments-svc", "env": "prod" },
+    "logs": [
+      { "offset_seconds": -500, "level": "info",  "line": "payments-svc: charge authorized txn_id=8891a2 amount=49.99" },
+      { "offset_seconds": -300, "level": "warn",  "line": "payments-svc: upstream stripe-gateway latency 3400ms (p99 threshold 1000ms)" },
+      { "offset_seconds": -200, "level": "error", "line": "payments-svc: timeout calling stripe-gateway after 5000ms, txn_id=8891a3" },
+      { "offset_seconds": -195, "level": "error", "line": "payments-svc: retry 1/3 failed, circuit breaker half-open" },
+      { "offset_seconds": -190, "level": "error", "line": "payments-svc: circuit breaker OPEN for stripe-gateway, failing fast" },
+      { "offset_seconds": -60,  "level": "warn",  "line": "payments-svc: circuit breaker HALF_OPEN, testing upstream" }
+    ]
+  },
+  "orders-db-proxy": {
+    "description": "Database connection pool exhaustion scenario",
+    "labels": { "service": "orders-db-proxy", "env": "prod" },
+    "logs": [
+      { "offset_seconds": -400, "level": "info",  "line": "orders-db-proxy: connection pool at 45/50" },
+      { "offset_seconds": -300, "level": "warn",  "line": "orders-db-proxy: connection pool at 49/50, queueing requests" },
+      { "offset_seconds": -240, "level": "error", "line": "orders-db-proxy: connection pool exhausted, rejecting new connections" },
+      { "offset_seconds": -235, "level": "error", "line": "orders-db-proxy: query timeout after 30000ms query_id=q-77219" },
+      { "offset_seconds": -100, "level": "info",  "line": "orders-db-proxy: pool size increased to 75, draining backlog" }
+    ]
+  },
+  "auth-service": {
+    "description": "Authentication service token-validation failure spike",
+    "labels": { "service": "auth-service", "env": "prod" },
+    "logs": [
+      { "offset_seconds": -450, "level": "info",  "line": "auth-service: token validated successfully user_id=88213" },
+      { "offset_seconds": -300, "level": "warn",  "line": "auth-service: elevated 401 rate detected (12% of requests, baseline 1%)" },
+      { "offset_seconds": -240, "level": "error", "line": "auth-service: token validation failed - JWKS endpoint timeout after 3000ms" },
+      { "offset_seconds": -220, "level": "error", "line": "auth-service: identity-provider upstream returned 503 Service Unavailable" },
+      { "offset_seconds": -180, "level": "error", "line": "auth-service: session store connection refused (redis-auth-01:6379)" },
+      { "offset_seconds": -60,  "level": "warn",  "line": "auth-service: retry succeeded after 2 attempts, 401 rate declining" }
+    ]
+  },
+  "search-api": {
+    "description": "Search service cache-miss spike and Elasticsearch cluster degradation",
+    "labels": { "service": "search-api", "env": "prod" },
+    "logs": [
+      { "offset_seconds": -500, "level": "info",  "line": "search-api: query completed status=200 latency_ms=85" },
+      { "offset_seconds": -360, "level": "warn",  "line": "search-api: cache miss ratio at 62% (baseline 15%)" },
+      { "offset_seconds": -300, "level": "error", "line": "search-api: elasticsearch cluster status YELLOW, shard relocation in progress" },
+      { "offset_seconds": -200, "level": "warn",  "line": "search-api: query latency p95 2400ms (threshold 500ms)" },
+      { "offset_seconds": -100, "level": "info",  "line": "search-api: cache warmed, miss ratio dropping" },
+      { "offset_seconds": -60,  "level": "warn",  "line": "search-api: query latency p95 1200ms, improving" }
+    ]
+  }
+}

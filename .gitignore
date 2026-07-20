@@ -1,0 +1,17 @@
+# Environment — never commit secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Runtime state (local holodeck-local.sh)
+/tmp/holodeck-runtime/
+/tmp/sre-mock-runtime/

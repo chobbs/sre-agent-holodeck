@@ -10,7 +10,6 @@ Mock API services for demoing PagerDuty's SRE Agent connectors without real obse
 | Arize | `https://arize.holodeck.scsandbox.net` | Arize |
 | Splunk | `https://splunk.holodeck.scsandbox.net` | Splunk |
 | Elasticsearch | `https://elasticsearch.holodeck.scsandbox.net` | Elasticsearch |
-
 **Auth token for all services:** `demo-token`
 
 ## Architecture
@@ -135,10 +134,20 @@ sre-conn-simulator/
 │   ├── app.py               # Elasticsearch API mock (Lucene/KQL/EQL search)
 │   ├── Dockerfile
 │   └── fixtures/scenarios.json
+├── dynatrace-mock/          # NOT DEPLOYED — see note below
+│   ├── app.py               # Dynatrace Grail API mock (OAuth2 + DQL)
+│   ├── Dockerfile
+│   └── fixtures/scenarios.json
 └── scripts/
     ├── bootstrap-ec2.sh     # Fresh instance setup (Docker + Buildx + Compose)
     └── sync-fixtures-to-s3.sh  # Upload all fixture JSON to S3
 ```
+
+## Dynatrace — not deployable
+
+A `dynatrace-mock/` exists in the repo but is **not included in the EC2 stack** and has no live endpoint. PagerDuty's Dynatrace connector hardcodes `sso.dynatrace.com` as the OAuth2 token endpoint regardless of the Environment URL you enter — it never calls your mock server for authentication. Both SaaS and Managed/ActiveGate URL formats were tested; neither caused the token request to reach the mock. The mock API itself (DQL query execute/poll) is implemented correctly and the code is kept for reference, but the connector cannot be used without real Dynatrace credentials.
+
+To test locally: `./holodeck-local.sh dynatrace` — useful for verifying the DQL query shape, but PagerDuty integration is blocked at the auth step.
 
 ## Admin endpoint
 

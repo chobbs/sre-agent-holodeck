@@ -1,0 +1,71 @@
+{
+  "default": {
+    "description": "Fallback scenario when no keyword matches",
+    "logs": [
+      { "offset_seconds": -300, "level": "info", "line": "OneAgent: healthcheck passed on all monitored processes" },
+      { "offset_seconds": -240, "level": "info", "line": "Davis AI: no anomalies detected in the last analysis window" },
+      { "offset_seconds": -120, "level": "info", "line": "OneAgent: process group instance healthy" },
+      { "offset_seconds": -30,  "level": "info", "line": "Davis AI: baseline established, all golden signals nominal" }
+    ]
+  },
+  "payments-api-gateway": {
+    "description": "Davis AI response-time degradation, automatically root-caused to a slow downstream dependency",
+    "labels": { "service": "payments-api-gateway", "env": "prod" },
+    "logs": [
+      { "offset_seconds": -600, "level": "info",  "line": "payments-api-gateway: response time p95 118ms (baseline)" },
+      { "offset_seconds": -420, "level": "warn",  "line": "Davis AI: response time anomaly detected on payments-api-gateway, p95 shifted from 118ms to 890ms" },
+      { "offset_seconds": -300, "level": "error", "line": "Davis AI: problem opened - PGI-4471, impact: response time degradation, affected users: 2,340" },
+      { "offset_seconds": -240, "level": "error", "line": "Davis AI: root cause analysis complete - dependency 'payments-rules-engine' identified as probable root cause (confidence: 92%)" },
+      { "offset_seconds": -120, "level": "warn",  "line": "payments-api-gateway: response time p95 610ms, trending down" },
+      { "offset_seconds": -60,  "level": "info",  "line": "Davis AI: problem PGI-4471 auto-closed, response time back within baseline" }
+    ]
+  },
+  "payments-orchestrator-sync": {
+    "description": "Davis AI failure-rate increase automatically correlated to a recent deployment",
+    "labels": { "service": "payments-orchestrator-sync", "env": "prod" },
+    "logs": [
+      { "offset_seconds": -550, "level": "info",  "line": "payments-orchestrator-sync: deployment event detected - version 4.12.0 rolled out to 100% of instances" },
+      { "offset_seconds": -400, "level": "warn",  "line": "Davis AI: failure rate anomaly detected on payments-orchestrator-sync, error rate shifted from 0.3% to 14.8%" },
+      { "offset_seconds": -350, "level": "error", "line": "Davis AI: problem opened - PGI-4488, impact: failure rate increase, affected requests: 8,120" },
+      { "offset_seconds": -300, "level": "error", "line": "Davis AI: root cause analysis complete - deployment event 'version 4.12.0' identified as probable root cause (confidence: 97%)" },
+      { "offset_seconds": -120, "level": "warn",  "line": "payments-orchestrator-sync: rollback to version 4.11.3 initiated" },
+      { "offset_seconds": -60,  "level": "info",  "line": "Davis AI: problem PGI-4488 auto-closed, error rate back within baseline after rollback" }
+    ]
+  },
+  "idempotency-token-service": {
+    "description": "Davis AI abnormal process restart pattern detected via OneAgent process health monitoring",
+    "labels": { "service": "idempotency-token-service", "env": "prod" },
+    "logs": [
+      { "offset_seconds": -500, "level": "info",  "line": "OneAgent: process group idempotency-token-service, restart count 0 (baseline)" },
+      { "offset_seconds": -350, "level": "warn",  "line": "Davis AI: abnormal restart frequency detected - idempotency-token-service restarted 3 times in 10 minutes" },
+      { "offset_seconds": -300, "level": "error", "line": "Davis AI: problem opened - PGI-4502, impact: process instability, availability risk" },
+      { "offset_seconds": -240, "level": "error", "line": "OneAgent: process exited with code 137 (OOM signal) - instance idempotency-token-service-6b9c8d-t4m2z" },
+      { "offset_seconds": -100, "level": "warn",  "line": "Davis AI: root cause analysis complete - memory limit misconfiguration identified as probable root cause (confidence: 84%)" },
+      { "offset_seconds": -60,  "level": "info",  "line": "Davis AI: problem PGI-4502 still open, awaiting memory limit adjustment" }
+    ]
+  },
+  "service-mesh-mtls": {
+    "description": "Davis AI golden-signal anomaly propagating through the service flow, root-caused to an expiring TLS certificate",
+    "labels": { "service": "service-mesh-mtls", "env": "prod" },
+    "logs": [
+      { "offset_seconds": -480, "level": "info",  "line": "service-mesh-mtls: mTLS handshake success rate 99.9% (baseline)" },
+      { "offset_seconds": -360, "level": "warn",  "line": "Davis AI: multi-dimensional anomaly detected - elevated latency and error rate correlated across 4 services in the mesh" },
+      { "offset_seconds": -300, "level": "error", "line": "Davis AI: problem opened - PGI-4517, impact: latency and error correlation across service flow" },
+      { "offset_seconds": -220, "level": "error", "line": "Davis AI: root cause analysis complete - TLS certificate for payments-rules-engine.mesh.local expiring in 47 minutes identified as probable root cause (confidence: 89%)" },
+      { "offset_seconds": -100, "level": "warn",  "line": "service-mesh-mtls: certificate rotation triggered for payments-rules-engine.mesh.local" },
+      { "offset_seconds": -60,  "level": "info",  "line": "Davis AI: problem PGI-4517 auto-closed, handshake success rate back to 99.9%" }
+    ]
+  },
+  "edge-waf-cdn": {
+    "description": "Real User Monitoring synthetic check failures at the edge, correlated to CDN origin latency",
+    "labels": { "service": "edge-waf-cdn", "env": "prod" },
+    "logs": [
+      { "offset_seconds": -500, "level": "info",  "line": "RUM: synthetic browser monitor 'checkout-flow' success rate 100% (baseline)" },
+      { "offset_seconds": -360, "level": "warn",  "line": "Davis AI: synthetic monitor failure rate anomaly detected - 'checkout-flow' success rate dropped to 62%" },
+      { "offset_seconds": -300, "level": "error", "line": "Davis AI: problem opened - PGI-4529, impact: real user experience degradation at edge-waf-cdn" },
+      { "offset_seconds": -220, "level": "error", "line": "Davis AI: root cause analysis complete - CDN origin latency spike (p95 2400ms) identified as probable root cause (confidence: 91%)" },
+      { "offset_seconds": -100, "level": "warn",  "line": "edge-waf-cdn: origin latency p95 1200ms, recovering" },
+      { "offset_seconds": -60,  "level": "info",  "line": "Davis AI: problem PGI-4529 auto-closed, synthetic monitor success rate back to 98%" }
+    ]
+  }
+}

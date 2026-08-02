@@ -33,3 +33,14 @@ elasticsearch.holodeck.scsandbox.net {
     }
     reverse_proxy elasticsearch:3003
 }
+
+# Dynatrace Managed/ActiveGate: PD expects {domain}:9999/e/{env-id}
+# TLS cert is issued via TLS-ALPN-01 on port 443, served on 9999.
+dynatrace.holodeck.scsandbox.net:9999 {
+    tls {
+        issuer acme {
+            disable_http_challenge
+        }
+    }
+    reverse_proxy dynatrace:3004
+}

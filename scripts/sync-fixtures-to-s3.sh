@@ -48,8 +48,9 @@ upload "${BASE}/grafana-mock/fixtures/metric_scenarios.json" "grafana/metric_sce
 upload "${BASE}/arize-mock/fixtures/scenarios.json"          "arize/scenarios.json"
 upload "${BASE}/splunk-mock/fixtures/scenarios.json"         "splunk/scenarios.json"
 upload "${BASE}/elasticsearch-mock/fixtures/scenarios.json"  "elasticsearch/scenarios.json"
+upload "${BASE}/dynatrace-mock/fixtures/scenarios.json"      "dynatrace/scenarios.json"
 
 echo ""
-echo "Done. All 5 fixture files synced to s3://${BUCKET}/"
+echo "Done. All 6 fixture files synced to s3://${BUCKET}/"
 echo ""
 echo "To hot-reload without restarting containers, POST to /admin/reload on each service."

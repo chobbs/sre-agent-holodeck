@@ -95,6 +95,31 @@ services:
       retries: 3
       start_period: 10s
 
+  dynatrace:
+    build:
+      context: .
+      dockerfile: dynatrace-mock/Dockerfile
+    container_name: holodeck-dynatrace
+    restart: unless-stopped
+    expose:
+      - "3004"
+    environment:
+      - MOCK_CLIENT_ID=${MOCK_CLIENT_ID:-demo-client}
+      - MOCK_CLIENT_SECRET=${MOCK_CLIENT_SECRET:-demo-secret}
+      - PORT=3004
+      - SIMULATE_ASYNC=${SIMULATE_ASYNC:-false}
+      - FIXTURES_S3_BUCKET=${FIXTURES_S3_BUCKET:-}
+      - FIXTURES_S3_KEY=dynatrace/scenarios.json
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-2}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3004/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   caddy:
     image: caddy:2-alpine
     container_name: holodeck-caddy
@@ -103,6 +128,7 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"   # HTTP/3 (QUIC)
+      - "9999:9999"     # Dynatrace Managed/ActiveGate format
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data          # Let's Encrypt certs — persists across restarts
@@ -112,6 +138,7 @@ services:
       - arize
       - splunk
       - elasticsearch
+      - dynatrace
 
 volumes:
   caddy_data:

@@ -1,6 +1,6 @@
 # Holodeck — SRE Connector Simulator
 
-Mock API services for demoing PagerDuty's SRE Agent connectors without real observability infrastructure. All four mocks run simultaneously as independent HTTPS services on EC2, backed by scenario fixtures stored in S3.
+Mock API services for demoing PagerDuty's SRE Agent connectors without real observability infrastructure. All five mocks run simultaneously as independent HTTPS services on EC2, backed by scenario fixtures stored in S3.
 
 ## Live endpoints
 
@@ -10,7 +10,13 @@ Mock API services for demoing PagerDuty's SRE Agent connectors without real obse
 | Arize | `https://arize.holodeck.scsandbox.net` | Arize |
 | Splunk | `https://splunk.holodeck.scsandbox.net` | Splunk |
 | Elasticsearch | `https://elasticsearch.holodeck.scsandbox.net` | Elasticsearch |
-**Auth token for all services:** `demo-token`
+| Dynatrace | `https://dynatrace.holodeck.scsandbox.net:9999` | Dynatrace ¹ |
+
+**Auth token for Grafana, Arize, Splunk, Elasticsearch:** `demo-token`
+
+**Dynatrace auth:** OAuth2 client credentials — Client ID `demo-client`, Client Secret `demo-secret`
+
+¹ Deployed and serving, but the PagerDuty Dynatrace connector cannot currently complete authentication against it — see [Dynatrace — auth limitation](#dynatrace--auth-limitation).
 
 ## Architecture
 
@@ -19,15 +25,16 @@ Mock API services for demoing PagerDuty's SRE Agent connectors without real obse
                                        ↓
                             EC2 / Amazon Linux 2023
                                        ↓
-                            Caddy (port 443, auto-TLS)
-              ┌────────────┬───────────┬──────────────────┐
-           grafana       arize       splunk        elasticsearch
-            :3000         :3001       :3002             :3003
+                     Caddy (ports 443 + 9999, auto-TLS)
+              ┌────────────┬───────────┬──────────────┬──────────────┐
+           grafana       arize       splunk    elasticsearch    dynatrace
+            :3000         :3001       :3002        :3003          :3004
                                        ↑
                           S3: sc-holodeck-demo
 ```
 
 - **Caddy** handles TLS (Let's Encrypt, auto-renewing via TLS-ALPN-01 — port 80 not required)
+- **Dynatrace** is served on port `9999` instead of `443`, because PagerDuty's connector expects the Dynatrace Managed/ActiveGate URL shape `{domain}:9999/e/{env-id}`
 - **Fixtures** are JSON files stored in S3, hot-reloadable without container restarts
 - **Docker Compose** manages all containers with `restart: unless-stopped` (survives reboots)
 
@@ -41,6 +48,9 @@ In PagerDuty → Integrations → connector setup, use:
 | Arize | `https://arize.holodeck.scsandbox.net` | API Key | `demo-token` |
 | Splunk | `https://splunk.holodeck.scsandbox.net` | Authentication Token | `demo-token` |
 | Elasticsearch | `https://elasticsearch.holodeck.scsandbox.net` | API Key | `demo-token` |
+| Dynatrace | `https://dynatrace.holodeck.scsandbox.net:9999/e/demo-env` | Client ID + Client Secret | `demo-client` / `demo-secret` |
+
+The Dynatrace row is included for completeness — the connector will fail at the auth step regardless of what you enter. See below.
 
 ## Managing the stack (on EC2)
 
@@ -89,6 +99,7 @@ s3://sc-holodeck-demo/
   arize/scenarios.json
   splunk/scenarios.json
   elasticsearch/scenarios.json
+  dynatrace/scenarios.json
 ```
 
 ## Scenario matching
@@ -97,14 +108,14 @@ Each service matches incoming requests against scenario keys using substring mat
 
 **Available scenarios per service:**
 
-| Grafana (logs) | Grafana (metrics) | Arize | Splunk | Elasticsearch |
-|---|---|---|---|---|
-| checkout-api | checkout-api | checkout-agent | suspicious-login | payments-api-gateway |
-| payments-svc | payments-svc | fraud-detection-model | privilege-escalation | payments-orchestrator-sync |
-| orders-db-proxy | orders-db-proxy | rag-retrieval-agent | data-exfiltration | idempotency-token-service |
-| auth-service | auth-service | hallucination | malware-detection | payments-rules-engine |
-| search-api | search-api | support-chatbot | firewall-policy-violation | service-mesh-mtls |
-| *(default)* | *(default)* | *(default)* | *(default)* | *(default)* |
+| Grafana (logs) | Grafana (metrics) | Arize | Splunk | Elasticsearch | Dynatrace |
+|---|---|---|---|---|---|
+| checkout-api | checkout-api | checkout-agent | suspicious-login | payments-api-gateway | payments-api-gateway |
+| payments-svc | payments-svc | fraud-detection-model | privilege-escalation | payments-orchestrator-sync | payments-orchestrator-sync |
+| orders-db-proxy | orders-db-proxy | rag-retrieval-agent | data-exfiltration | idempotency-token-service | idempotency-token-service |
+| auth-service | auth-service | hallucination | malware-detection | payments-rules-engine | service-mesh-mtls |
+| search-api | search-api | support-chatbot | firewall-policy-violation | service-mesh-mtls | edge-waf-cdn |
+| *(default)* | *(default)* | *(default)* | *(default)* | *(default)* | *(default)* |
 
 ## Project structure
 
@@ -112,7 +123,7 @@ Each service matches incoming requests against scenario keys using substring mat
 sre-conn-simulator/
 ├── holodeck.sh              # EC2 stack manager (docker compose wrapper)
 ├── holodeck-local.sh        # Local dev runner (Flask + ngrok, one service at a time)
-├── docker-compose.yml       # All 4 mocks + Caddy
+├── docker-compose.yml       # All 5 mocks + Caddy
 ├── Caddyfile                # HTTPS reverse proxy config
 ├── requirements.txt         # Shared Python deps (Flask, boto3)
 ├── .env.example             # Environment variable template
@@ -134,7 +145,7 @@ sre-conn-simulator/
 │   ├── app.py               # Elasticsearch API mock (Lucene/KQL/EQL search)
 │   ├── Dockerfile
 │   └── fixtures/scenarios.json
-├── dynatrace-mock/          # NOT DEPLOYED — see note below
+├── dynatrace-mock/
 │   ├── app.py               # Dynatrace Grail API mock (OAuth2 + DQL)
 │   ├── Dockerfile
 │   └── fixtures/scenarios.json
@@ -143,11 +154,24 @@ sre-conn-simulator/
     └── sync-fixtures-to-s3.sh  # Upload all fixture JSON to S3
 ```
 
-## Dynatrace — not deployable
+## Dynatrace — auth limitation
 
-A `dynatrace-mock/` exists in the repo but is **not included in the EC2 stack** and has no live endpoint. PagerDuty's Dynatrace connector hardcodes `sso.dynatrace.com` as the OAuth2 token endpoint regardless of the Environment URL you enter — it never calls your mock server for authentication. Both SaaS and Managed/ActiveGate URL formats were tested; neither caused the token request to reach the mock. The mock API itself (DQL query execute/poll) is implemented correctly and the code is kept for reference, but the connector cannot be used without real Dynatrace credentials.
+The Dynatrace mock **is deployed** as part of the EC2 stack and serves on `https://dynatrace.holodeck.scsandbox.net:9999`. It implements the OAuth2 client-credentials token exchange, DQL query execution, and the async poll flow, and it works end-to-end when driven directly (e.g. `curl`, or locally via `./holodeck-local.sh dynatrace`).
 
-To test locally: `./holodeck-local.sh dynatrace` — useful for verifying the DQL query shape, but PagerDuty integration is blocked at the auth step.
+**However, the PagerDuty Dynatrace connector cannot authenticate against it.** PagerDuty hardcodes `sso.dynatrace.com` as the OAuth2 token endpoint regardless of the Environment URL you enter, so the token request never reaches the mock. Both the SaaS and Managed/ActiveGate URL formats were tested; neither redirected auth to the mock. Using this connector against the simulator therefore requires real Dynatrace credentials.
+
+The service is kept in the stack so the API surface stays exercised and deployable — useful for verifying DQL query shape and for the day PagerDuty makes the token endpoint configurable.
+
+To exercise it directly:
+```bash
+# Get a token
+curl -sk -X POST https://dynatrace.holodeck.scsandbox.net:9999/sso/oauth2/token \
+  -d grant_type=client_credentials \
+  -d client_id=demo-client \
+  -d client_secret=demo-secret | jq .
+```
+
+Set `SIMULATE_ASYNC=true` in `.env` to force the polling path (query returns `202 RUNNING`, then succeeds on the next poll).
 
 ## Admin endpoint
 
@@ -176,7 +200,7 @@ Requires: Python 3, `pip install -r requirements.txt`, ngrok configured with you
 | Elastic IP | `35.88.248.161` |
 | Region | `us-west-2` |
 | OS | Amazon Linux 2023 |
-| Security group | `Solution-Consulting-BVA` (inbound: 443 from 0.0.0.0/0, 22 from trusted IPs) |
+| Security group | `Solution-Consulting-BVA` (inbound: 443 + 9999 from 0.0.0.0/0, 22 from trusted IPs) |
 | S3 bucket | `sc-holodeck-demo` (fixtures) |
 | Project path | `~/holodeck/` |
 | Key | `solutions-consulting.pem` |

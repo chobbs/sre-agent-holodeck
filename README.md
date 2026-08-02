@@ -16,12 +16,14 @@ Mock API services for demoing PagerDuty's SRE Agent connectors without real obse
 
 **Dynatrace auth:** OAuth2 client credentials — Client ID `demo-client`, Client Secret `demo-secret`
 
-¹ Deployed and serving, but the PagerDuty Dynatrace connector cannot currently complete authentication against it — see [Dynatrace — auth limitation](#dynatrace--auth-limitation).
+¹ **Not publicly reachable.** The container is deployed and healthy, and Caddy serves it on `:9999` with a valid Let's Encrypt cert — but the hostname is proxied through Cloudflare, which does not forward port `9999`. See [Dynatrace — known limitations](#dynatrace--known-limitations).
 
 ## Architecture
 
 ```
-*.holodeck.scsandbox.net  →  Elastic IP (35.88.248.161)
+*.holodeck.scsandbox.net  →  Cloudflare proxy (443 only)
+                                       ↓
+                             Elastic IP (35.88.248.161)
                                        ↓
                             EC2 / Amazon Linux 2023
                                        ↓
@@ -154,21 +156,34 @@ sre-conn-simulator/
     └── sync-fixtures-to-s3.sh  # Upload all fixture JSON to S3
 ```
 
-## Dynatrace — auth limitation
+## Dynatrace — known limitations
 
-The Dynatrace mock **is deployed** as part of the EC2 stack and serves on `https://dynatrace.holodeck.scsandbox.net:9999`. It implements the OAuth2 client-credentials token exchange, DQL query execution, and the async poll flow, and it works end-to-end when driven directly (e.g. `curl`, or locally via `./holodeck-local.sh dynatrace`).
+The Dynatrace mock **is deployed** as part of the EC2 stack. The container is healthy, Caddy serves it on port `9999`, and it holds a valid Let's Encrypt certificate for `dynatrace.holodeck.scsandbox.net`. It implements the OAuth2 client-credentials token exchange, DQL query execution, and the async poll flow.
 
-**However, the PagerDuty Dynatrace connector cannot authenticate against it.** PagerDuty hardcodes `sso.dynatrace.com` as the OAuth2 token endpoint regardless of the Environment URL you enter, so the token request never reaches the mock. Both the SaaS and Managed/ActiveGate URL formats were tested; neither redirected auth to the mock. Using this connector against the simulator therefore requires real Dynatrace credentials.
+Two separate issues currently block end-to-end use with PagerDuty:
+
+**1. Port 9999 is not reachable through Cloudflare.** `*.holodeck.scsandbox.net` is proxied through Cloudflare (the hostname resolves to a Cloudflare IP, not the Elastic IP). Cloudflare's HTTPS proxy only forwards a fixed set of ports — 443, 2053, 2083, 2087, 2096, 8443 — and `9999` is not one of them, so requests to the public hostname on `:9999` never reach the origin. The other four services are unaffected because they use `443`.
+
+To make it publicly reachable, set the `dynatrace` DNS record to **DNS only** (grey cloud) in Cloudflare so it resolves straight to `35.88.248.161`. Inbound `9999` is already open on the security group and verified working.
+
+**2. PagerDuty hardcodes the OAuth2 token endpoint.** Even with the port issue resolved, PagerDuty's Dynatrace connector uses `sso.dynatrace.com` as the token endpoint regardless of the Environment URL you enter, so the token request never reaches the mock. Both the SaaS and Managed/ActiveGate URL formats were tested; neither redirected auth to the mock. This connector therefore requires real Dynatrace credentials.
 
 The service is kept in the stack so the API surface stays exercised and deployable — useful for verifying DQL query shape and for the day PagerDuty makes the token endpoint configurable.
 
-To exercise it directly:
+To exercise it directly, bypassing Cloudflare:
 ```bash
-# Get a token
-curl -sk -X POST https://dynatrace.holodeck.scsandbox.net:9999/sso/oauth2/token \
+# Get a token (resolve straight to the Elastic IP)
+curl -s --resolve dynatrace.holodeck.scsandbox.net:9999:35.88.248.161 \
+  -X POST https://dynatrace.holodeck.scsandbox.net:9999/sso/oauth2/token \
   -d grant_type=client_credentials \
   -d client_id=demo-client \
   -d client_secret=demo-secret | jq .
+```
+
+Or from the instance itself:
+```bash
+docker exec holodeck-dynatrace curl -s -X POST http://localhost:3004/sso/oauth2/token \
+  -d grant_type=client_credentials -d client_id=demo-client -d client_secret=demo-secret | jq .
 ```
 
 Set `SIMULATE_ASYNC=true` in `.env` to force the polling path (query returns `202 RUNNING`, then succeeds on the next poll).
@@ -201,6 +216,7 @@ Requires: Python 3, `pip install -r requirements.txt`, ngrok configured with you
 | Region | `us-west-2` |
 | OS | Amazon Linux 2023 |
 | Security group | `Solution-Consulting-BVA` (inbound: 443 + 9999 from 0.0.0.0/0, 22 from trusted IPs) |
+| DNS | `*.holodeck.scsandbox.net` proxied via Cloudflare (blocks non-standard ports — see Dynatrace limitations) |
 | S3 bucket | `sc-holodeck-demo` (fixtures) |
 | Project path | `~/holodeck/` |
 | Key | `solutions-consulting.pem` |

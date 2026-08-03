@@ -114,10 +114,27 @@ print('ok (' + ', '.join(parts) + ')')
 
 cmd_deploy() {
   echo "Pulling latest from GitHub..."
+  local before after
+  before=$(git -C "${BASE_DIR}" rev-parse HEAD 2>/dev/null)
   git -C "${BASE_DIR}" pull origin main || { echo "git pull failed — check remote/credentials"; exit 1; }
+  after=$(git -C "${BASE_DIR}" rev-parse HEAD 2>/dev/null)
+
   echo ""
   echo "Rebuilding and restarting changed containers..."
   $DC up --build -d
+
+  # The Caddyfile is mounted as a SINGLE FILE bind mount, which binds to the
+  # file's inode. `git pull` writes a new file and renames it, so the running
+  # caddy container keeps serving the OLD config. Worse, `caddy reload` inside
+  # the container will validate and reload that stale file and report success.
+  # The only reliable fix is to recreate the container so the mount rebinds.
+  if [ -n "$before" ] && [ "$before" != "$after" ] &&
+     ! git -C "${BASE_DIR}" diff --quiet "$before" "$after" -- Caddyfile; then
+    echo ""
+    echo "Caddyfile changed — recreating caddy so the config mount rebinds..."
+    $DC up -d --force-recreate caddy
+  fi
+
   echo ""
   cmd_status
 }

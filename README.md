@@ -10,13 +10,13 @@ Mock API services for demoing PagerDuty's SRE Agent connectors without real obse
 | Arize | `https://arize.holodeck.scsandbox.net` | Arize |
 | Splunk | `https://splunk.holodeck.scsandbox.net` | Splunk |
 | Elasticsearch | `https://elasticsearch.holodeck.scsandbox.net` | Elasticsearch |
-| Dynatrace | `https://dynatrace.holodeck.scsandbox.net:9999` | Dynatrace ¹ |
+| Dynatrace | `https://dynatrace.holodeck.scsandbox.net` (also `:9999`) | Dynatrace ¹ |
 
 **Auth token for Grafana, Arize, Splunk, Elasticsearch:** `demo-token`
 
 **Dynatrace auth:** OAuth2 client credentials — Client ID `demo-client`, Client Secret `demo-secret`
 
-¹ Deployed, healthy, and serving on `:9999` with a valid Let's Encrypt cert. Reachability depends on the source — inbound `9999` is source-restricted on the security group, and PagerDuty-managed laptops are blocked by Cloudflare WARP. See [Dynatrace — known limitations](#dynatrace--known-limitations).
+¹ Served on **both** `443` and `9999` with a valid Let's Encrypt cert. Prefer `443` — it is open to `0.0.0.0/0`, whereas inbound `9999` is source-restricted. Note that PagerDuty-managed laptops cannot reach any of these hostnames directly (Cloudflare WARP). See [Dynatrace — known limitations](#dynatrace--known-limitations).
 
 ## Architecture
 
@@ -48,9 +48,9 @@ In PagerDuty → Integrations → connector setup, use:
 | Arize | `https://arize.holodeck.scsandbox.net` | API Key | `demo-token` |
 | Splunk | `https://splunk.holodeck.scsandbox.net` | Authentication Token | `demo-token` |
 | Elasticsearch | `https://elasticsearch.holodeck.scsandbox.net` | API Key | `demo-token` |
-| Dynatrace | `https://dynatrace.holodeck.scsandbox.net:9999/e/demo-env` | Client ID + Client Secret | `demo-client` / `demo-secret` |
+| Dynatrace | `https://dynatrace.holodeck.scsandbox.net/e/demo-env` | Client ID + Client Secret | `demo-client` / `demo-secret` |
 
-The Dynatrace row is included for completeness — the connector will fail at the auth step regardless of what you enter. See below.
+Use the `443` URL for Dynatrace (no port). The mock serves the Managed/ActiveGate path prefix `/e/{env-id}/...` on `443`, so it exercises the same code path as the canonical `:9999` form without depending on the source-restricted `9999` rule. Verified end-to-end: token exchange → DQL query → `SUCCEEDED` with scenario records.
 
 ## Managing the stack (on EC2)
 
@@ -69,6 +69,20 @@ bash ~/holodeck/holodeck.sh reload-fixtures   # pull new JSON from S3, no restar
 bash ~/holodeck/holodeck.sh sync-fixtures     # upload local JSON → S3 → reload
 bash ~/holodeck/holodeck.sh up                # start the full stack
 bash ~/holodeck/holodeck.sh down              # stop the full stack
+bash ~/holodeck/holodeck.sh deploy            # git pull + rebuild changed containers
+```
+
+### Gotcha: Caddyfile changes need a container recreate
+`Caddyfile` is mounted into the caddy container as a **single-file bind mount**, which binds to the file's inode. `git pull` writes a new file and renames it, so a running caddy container keeps serving the **old** config. Running `caddy reload` does not help — it validates and reloads the stale file and reports `Valid configuration`, which makes the failure silent.
+
+`holodeck.sh deploy` now detects a changed `Caddyfile` and recreates caddy automatically. If you edit the file by hand on the box, do it yourself:
+```bash
+docker compose -f ~/holodeck/docker-compose.yml up -d --force-recreate caddy
+```
+Verify the container actually sees your version:
+```bash
+docker exec holodeck-caddy stat -c "%i %s" /etc/caddy/Caddyfile   # compare with host
+docker exec holodeck-caddy curl -s localhost:2019/config/          # running config
 ```
 
 ## Updating scenario fixtures
@@ -156,7 +170,7 @@ sre-conn-simulator/
 
 ## Dynatrace — known limitations
 
-The Dynatrace mock **is deployed** as part of the EC2 stack. The container is healthy, Caddy serves it on port `9999`, and it holds a valid Let's Encrypt certificate for `dynatrace.holodeck.scsandbox.net`. It implements the OAuth2 client-credentials token exchange, DQL query execution, and the async poll flow.
+The Dynatrace mock **is deployed** as part of the EC2 stack. The container is healthy, Caddy serves it on ports `443` and `9999`, and it holds a valid Let's Encrypt certificate for `dynatrace.holodeck.scsandbox.net`. It implements the OAuth2 client-credentials token exchange, DQL query execution, and the async poll flow.
 
 The DNS zone is **not** proxied — `*.holodeck.scsandbox.net` resolves straight to `35.88.248.161`. Three independent things affect reachability and PagerDuty integration:
 
@@ -164,14 +178,14 @@ The DNS zone is **not** proxied — `*.holodeck.scsandbox.net` resolves straight
 
 To test from a corporate laptop, pin the IP so WARP's DNS interception is bypassed:
 ```bash
-curl -s --resolve dynatrace.holodeck.scsandbox.net:9999:35.88.248.161 \
-  -X POST https://dynatrace.holodeck.scsandbox.net:9999/sso/oauth2/token \
+curl -s --resolve dynatrace.holodeck.scsandbox.net:443:35.88.248.161 \
+  -X POST https://dynatrace.holodeck.scsandbox.net/e/demo-env/sso/oauth2/token \
   -d grant_type=client_credentials \
   -d client_id=demo-client \
   -d client_secret=demo-secret | jq .
 ```
 
-**2. Inbound 9999 is source-restricted on the security group.** Port `443` is open to `0.0.0.0/0`, but `9999` is not: connections succeed from some sources and are refused from others (verified — Caddy listens on both ports, yet the instance cannot reach its own Elastic IP on `9999` while `443` succeeds). If PagerDuty's egress IPs are outside the allowed range, the connector cannot reach the mock regardless of anything else. Widen the `9999` rule before concluding anything from a failed connector test.
+**2. Inbound 9999 is source-restricted on the security group.** Port `443` is open to `0.0.0.0/0`, but `9999` is not: connections succeed from some sources and are refused from others (verified — Caddy listens on both ports, yet the instance cannot reach its own Elastic IP on `9999` while `443` succeeds). **Worked around** by also serving the mock on `443`; use the portless URL above rather than widening the `9999` rule.
 
 **3. PagerDuty appears to hardcode the OAuth2 token endpoint.** Earlier testing suggested the connector uses `sso.dynatrace.com` regardless of the Environment URL entered, so the token request never reaches the mock. Treat this as **unconfirmed** until items 1 and 2 are ruled out — a token request blocked by the security group is indistinguishable from one that was never sent. Check the container log to see whether a request actually arrived:
 ```bash

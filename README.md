@@ -10,13 +10,13 @@ Mock API services for demoing PagerDuty's SRE Agent connectors without real obse
 | Arize | `https://arize.holodeck.scsandbox.net` | Arize |
 | Splunk | `https://splunk.holodeck.scsandbox.net` | Splunk |
 | Elasticsearch | `https://elasticsearch.holodeck.scsandbox.net` | Elasticsearch |
-| Dynatrace | `https://dynatrace.holodeck.scsandbox.net` (also `:9999`) | Dynatrace ¹ |
+| Dynatrace | `https://dynatrace.holodeck.scsandbox.net:9999` (also `443`) | Dynatrace ¹ |
 
 **Auth token for Grafana, Arize, Splunk, Elasticsearch:** `demo-token`
 
 **Dynatrace auth:** OAuth2 client credentials — Client ID `demo-client`, Client Secret `demo-secret`
 
-¹ Served on **both** `443` and `9999` with a valid Let's Encrypt cert. Prefer `443` — it is open to `0.0.0.0/0`, whereas inbound `9999` is source-restricted. Note that PagerDuty-managed laptops cannot reach any of these hostnames directly (Cloudflare WARP). See [Dynatrace — known limitations](#dynatrace--known-limitations).
+¹ Served on **both** `443` and `9999` with a valid Let's Encrypt cert; both ports are open to `0.0.0.0/0`. Use `:9999` — it is the URL shape PagerDuty's Dynatrace connector expects. Note that PagerDuty-managed laptops cannot reach any of these hostnames directly (Cloudflare WARP). See [Dynatrace — known limitations](#dynatrace--known-limitations).
 
 ## Architecture
 
@@ -48,9 +48,11 @@ In PagerDuty → Integrations → connector setup, use:
 | Arize | `https://arize.holodeck.scsandbox.net` | API Key | `demo-token` |
 | Splunk | `https://splunk.holodeck.scsandbox.net` | Authentication Token | `demo-token` |
 | Elasticsearch | `https://elasticsearch.holodeck.scsandbox.net` | API Key | `demo-token` |
-| Dynatrace | `https://dynatrace.holodeck.scsandbox.net/e/demo-env` | Client ID + Client Secret | `demo-client` / `demo-secret` |
+| Dynatrace | `https://dynatrace.holodeck.scsandbox.net:9999/e/demo-env` | Client ID + Client Secret | `demo-client` / `demo-secret` |
 
-Use the `443` URL for Dynatrace (no port). The mock serves the Managed/ActiveGate path prefix `/e/{env-id}/...` on `443`, so it exercises the same code path as the canonical `:9999` form without depending on the source-restricted `9999` rule. Verified end-to-end: token exchange → DQL query → `SUCCEEDED` with scenario records.
+For Dynatrace set **Environment Type: Managed** and use the `:9999/e/{env-id}` form above — that is the Managed/ActiveGate shape PagerDuty expects, and it is the only variant that can reach the mock at all (Dynatrace **SaaS** always authenticates against `sso.dynatrace.com`, so PD would ignore your Environment URL for the token call).
+
+The same mock is also served on plain `443`, so `https://dynatrace.holodeck.scsandbox.net/e/demo-env` works as a fallback if the form rejects the port. Both are verified end-to-end: token exchange → DQL query → `SUCCEEDED` with scenario records, valid Let's Encrypt cert on both ports.
 
 ## Managing the stack (on EC2)
 
@@ -185,12 +187,29 @@ curl -s --resolve dynatrace.holodeck.scsandbox.net:443:35.88.248.161 \
   -d client_secret=demo-secret | jq .
 ```
 
-**2. Inbound 9999 is source-restricted on the security group.** Port `443` is open to `0.0.0.0/0`, but `9999` is not: connections succeed from some sources and are refused from others (verified — Caddy listens on both ports, yet the instance cannot reach its own Elastic IP on `9999` while `443` succeeds). **Worked around** by also serving the mock on `443`; use the portless URL above rather than widening the `9999` rule.
+**2. Inbound 9999 — RESOLVED.** This port was originally missing from the `Solution-Consulting-BVA` security group, so the canonical Managed URL was unreachable from the internet even though Caddy was serving it correctly. A `tcp/9999` rule for `0.0.0.0/0` has since been added and verified. The mock is additionally served on `443` as a fallback.
 
-**3. PagerDuty appears to hardcode the OAuth2 token endpoint.** Earlier testing suggested the connector uses `sso.dynatrace.com` regardless of the Environment URL entered, so the token request never reaches the mock. Treat this as **unconfirmed** until items 1 and 2 are ruled out — a token request blocked by the security group is indistinguishable from one that was never sent. Check the container log to see whether a request actually arrived:
+If `:9999` ever stops responding, check the security group first — the service listening is not the same as the port being reachable:
 ```bash
-docker logs holodeck-dynatrace --tail 50
+# on the instance: is Caddy listening, and is the port reachable from outside?
+cat < /dev/null > /dev/tcp/127.0.0.1/9999      && echo listening
+cat < /dev/null > /dev/tcp/35.88.248.161/9999  && echo reachable
+aws ec2 describe-security-groups --region us-west-2 \
+  --filters Name=group-name,Values=Solution-Consulting-BVA \
+  --query "SecurityGroups[].IpPermissions[].[IpProtocol,FromPort,IpRanges[].CidrIp]" --output text
 ```
+
+**3. Does PagerDuty hardcode the OAuth2 token endpoint? — UNCONFIRMED, now testable.** Earlier testing suggested the connector always calls `sso.dynatrace.com` regardless of the Environment URL. That conclusion was never actually evidenced: the mock's log has only ever contained healthcheck traffic from `127.0.0.1`, and until the `9999` rule was added a token request would have been dropped by the security group — indistinguishable from one that was never sent.
+
+With networking now verified end-to-end, this is a clean test. Watch the mock while saving the connector:
+```bash
+docker logs -f --since 1m holodeck-dynatrace
+```
+- `POST /e/demo-env/sso/oauth2/token ... 200` → PD honors the Environment URL; the mock works and the earlier dead-end was a networking artifact.
+- Only `127.0.0.1 ... GET / 200` (healthcheck, every 30s) → nothing arrived; PD really does go to `sso.dynatrace.com`. Confirmed dead end.
+- `401 invalid_client` → PD reached the mock but credentials mismatch (check for stray whitespace).
+
+Note that **Environment Type matters**: pick Managed, not SaaS. Real Dynatrace SaaS always uses `sso.dynatrace.com`, so testing with SaaS selected would reproduce the original dead end by design.
 
 To verify the mock itself independent of all networking, run it from the instance:
 ```bash
@@ -229,7 +248,7 @@ Requires: Python 3, `pip install -r requirements.txt`, ngrok configured with you
 | Elastic IP | `35.88.248.161` |
 | Region | `us-west-2` |
 | OS | Amazon Linux 2023 |
-| Security group | `Solution-Consulting-BVA` (inbound: 443 from 0.0.0.0/0, 9999 source-restricted, 22 from trusted IPs) |
+| Security group | `Solution-Consulting-BVA` — `sg-075c3b95bf9657a5f` (inbound: 443 + 9999 from 0.0.0.0/0, 22 and 4000 from specific /32s) |
 | DNS | `*.holodeck.scsandbox.net` → `35.88.248.161` (not proxied). Corporate Cloudflare WARP blocks the domain on managed laptops |
 | S3 bucket | `sc-holodeck-demo` (fixtures) |
 | Project path | `~/holodeck/` |

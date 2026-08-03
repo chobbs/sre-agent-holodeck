@@ -34,9 +34,24 @@ elasticsearch.holodeck.scsandbox.net {
     reverse_proxy elasticsearch:3003
 }
 
-# Dynatrace Managed/ActiveGate: PD expects {domain}:9999/e/{env-id}
+# Dynatrace Managed/ActiveGate canonical shape: {domain}:9999/e/{env-id}
 # TLS cert is issued via TLS-ALPN-01 on port 443, served on 9999.
+# NOTE: inbound 9999 is source-restricted on the security group, so this
+# listener is not reachable from everywhere. See README.
 dynatrace.holodeck.scsandbox.net:9999 {
+    tls {
+        issuer acme {
+            disable_http_challenge
+        }
+    }
+    reverse_proxy dynatrace:3004
+}
+
+# Same dynatrace mock on 443, which is open to 0.0.0.0/0. The mock serves
+# the Managed path prefix (/e/{env-id}/...) as well as the bare SaaS paths,
+# so PD can point at https://dynatrace.holodeck.scsandbox.net/e/{env-id}
+# without needing the 9999 rule widened.
+dynatrace.holodeck.scsandbox.net {
     tls {
         issuer acme {
             disable_http_challenge

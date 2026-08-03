@@ -16,14 +16,12 @@ Mock API services for demoing PagerDuty's SRE Agent connectors without real obse
 
 **Dynatrace auth:** OAuth2 client credentials — Client ID `demo-client`, Client Secret `demo-secret`
 
-¹ **Not publicly reachable.** The container is deployed and healthy, and Caddy serves it on `:9999` with a valid Let's Encrypt cert — but the hostname is proxied through Cloudflare, which does not forward port `9999`. See [Dynatrace — known limitations](#dynatrace--known-limitations).
+¹ Deployed, healthy, and serving on `:9999` with a valid Let's Encrypt cert. Reachability depends on the source — inbound `9999` is source-restricted on the security group, and PagerDuty-managed laptops are blocked by Cloudflare WARP. See [Dynatrace — known limitations](#dynatrace--known-limitations).
 
 ## Architecture
 
 ```
-*.holodeck.scsandbox.net  →  Cloudflare proxy (443 only)
-                                       ↓
-                             Elastic IP (35.88.248.161)
+*.holodeck.scsandbox.net  →  Elastic IP (35.88.248.161)
                                        ↓
                             EC2 / Amazon Linux 2023
                                        ↓
@@ -160,19 +158,12 @@ sre-conn-simulator/
 
 The Dynatrace mock **is deployed** as part of the EC2 stack. The container is healthy, Caddy serves it on port `9999`, and it holds a valid Let's Encrypt certificate for `dynatrace.holodeck.scsandbox.net`. It implements the OAuth2 client-credentials token exchange, DQL query execution, and the async poll flow.
 
-Two separate issues currently block end-to-end use with PagerDuty:
+The DNS zone is **not** proxied — `*.holodeck.scsandbox.net` resolves straight to `35.88.248.161`. Three independent things affect reachability and PagerDuty integration:
 
-**1. Port 9999 is not reachable through Cloudflare.** `*.holodeck.scsandbox.net` is proxied through Cloudflare (the hostname resolves to a Cloudflare IP, not the Elastic IP). Cloudflare's HTTPS proxy only forwards a fixed set of ports — 443, 2053, 2083, 2087, 2096, 8443 — and `9999` is not one of them, so requests to the public hostname on `:9999` never reach the origin. The other four services are unaffected because they use `443`.
+**1. Cloudflare WARP blocks the domain on PagerDuty-managed machines.** Requests from a corporate laptop return `303 See Other` to `blocked.teams.cloudflare.com` ("blocked by PagerDuty IT"). This is a device-level Zero Trust DNS/HTTP filter and it affects **all five services**, not just Dynatrace — the other four appear to work only because PagerDuty's cloud reaches them directly, not through WARP.
 
-To make it publicly reachable, set the `dynatrace` DNS record to **DNS only** (grey cloud) in Cloudflare so it resolves straight to `35.88.248.161`. Inbound `9999` is already open on the security group and verified working.
-
-**2. PagerDuty hardcodes the OAuth2 token endpoint.** Even with the port issue resolved, PagerDuty's Dynatrace connector uses `sso.dynatrace.com` as the token endpoint regardless of the Environment URL you enter, so the token request never reaches the mock. Both the SaaS and Managed/ActiveGate URL formats were tested; neither redirected auth to the mock. This connector therefore requires real Dynatrace credentials.
-
-The service is kept in the stack so the API surface stays exercised and deployable — useful for verifying DQL query shape and for the day PagerDuty makes the token endpoint configurable.
-
-To exercise it directly, bypassing Cloudflare:
+To test from a corporate laptop, pin the IP so WARP's DNS interception is bypassed:
 ```bash
-# Get a token (resolve straight to the Elastic IP)
 curl -s --resolve dynatrace.holodeck.scsandbox.net:9999:35.88.248.161 \
   -X POST https://dynatrace.holodeck.scsandbox.net:9999/sso/oauth2/token \
   -d grant_type=client_credentials \
@@ -180,13 +171,22 @@ curl -s --resolve dynatrace.holodeck.scsandbox.net:9999:35.88.248.161 \
   -d client_secret=demo-secret | jq .
 ```
 
-Or from the instance itself:
+**2. Inbound 9999 is source-restricted on the security group.** Port `443` is open to `0.0.0.0/0`, but `9999` is not: connections succeed from some sources and are refused from others (verified — Caddy listens on both ports, yet the instance cannot reach its own Elastic IP on `9999` while `443` succeeds). If PagerDuty's egress IPs are outside the allowed range, the connector cannot reach the mock regardless of anything else. Widen the `9999` rule before concluding anything from a failed connector test.
+
+**3. PagerDuty appears to hardcode the OAuth2 token endpoint.** Earlier testing suggested the connector uses `sso.dynatrace.com` regardless of the Environment URL entered, so the token request never reaches the mock. Treat this as **unconfirmed** until items 1 and 2 are ruled out — a token request blocked by the security group is indistinguishable from one that was never sent. Check the container log to see whether a request actually arrived:
+```bash
+docker logs holodeck-dynatrace --tail 50
+```
+
+To verify the mock itself independent of all networking, run it from the instance:
 ```bash
 docker exec holodeck-dynatrace curl -s -X POST http://localhost:3004/sso/oauth2/token \
   -d grant_type=client_credentials -d client_id=demo-client -d client_secret=demo-secret | jq .
 ```
 
 Set `SIMULATE_ASYNC=true` in `.env` to force the polling path (query returns `202 RUNNING`, then succeeds on the next poll).
+
+The service is kept in the stack so the API surface stays exercised and deployable — useful for verifying DQL query shape and for the day PagerDuty makes the token endpoint configurable.
 
 ## Admin endpoint
 
@@ -215,8 +215,8 @@ Requires: Python 3, `pip install -r requirements.txt`, ngrok configured with you
 | Elastic IP | `35.88.248.161` |
 | Region | `us-west-2` |
 | OS | Amazon Linux 2023 |
-| Security group | `Solution-Consulting-BVA` (inbound: 443 + 9999 from 0.0.0.0/0, 22 from trusted IPs) |
-| DNS | `*.holodeck.scsandbox.net` proxied via Cloudflare (blocks non-standard ports — see Dynatrace limitations) |
+| Security group | `Solution-Consulting-BVA` (inbound: 443 from 0.0.0.0/0, 9999 source-restricted, 22 from trusted IPs) |
+| DNS | `*.holodeck.scsandbox.net` → `35.88.248.161` (not proxied). Corporate Cloudflare WARP blocks the domain on managed laptops |
 | S3 bucket | `sc-holodeck-demo` (fixtures) |
 | Project path | `~/holodeck/` |
 | Key | `solutions-consulting.pem` |

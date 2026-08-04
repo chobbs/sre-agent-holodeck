@@ -84,6 +84,13 @@ FIXTURES_PATH = Path(__file__).parent / "fixtures" / "scenarios.json"
 
 DEFAULT_AUTHOR = "SRE Platform Team"
 
+# Most articles a search will return. Real ServiceNow would return many, but
+# flooding the SRE Agent is actively harmful: it was observed receiving 7
+# articles — with the correct runbook ranked FIRST — and still replying
+# "returned 7 articles but none matched". The agent does not treat array order
+# as relevance, so weak matches have to be pruned rather than merely ranked.
+MAX_RESULTS = 3
+
 # Dropped when scoring: PagerDuty prefixes the search with "number=", and
 # generic words match everything so they carry no signal.
 STOPWORDS = {
@@ -245,12 +252,16 @@ def search_articles(raw_query: str, limit: int = 10):
 
     matched = sorted([s for s in scored if s[0] > 0], key=lambda s: -s[0])
     if matched:
-        ordered = [s[2] for s in matched]
+        # Drop weak matches. Sharing one common token ("api") is not a match,
+        # and including such articles buries the real answer.
+        top = matched[0][0]
+        cutoff = max(top * 0.5, 2)
+        ordered = [s[2] for s in matched if s[0] >= cutoff][:MAX_RESULTS]
     else:
-        # Nothing matched: lead with the default handbook, then everything
-        # else, so the agent gets usable guidance instead of an empty result.
-        ordered = ([SCENARIOS["default"]] if "default" in SCENARIOS else [])
-        ordered += [s[2] for s in scored if s[1] != "default"]
+        # Nothing matched: return only the general handbook. That reads as
+        # "no specific runbook exists, here is the fallback", which is a much
+        # clearer signal than a long list of unrelated articles.
+        ordered = [SCENARIOS["default"]] if "default" in SCENARIOS else []
 
     return ordered[: max(limit, 1)]
 

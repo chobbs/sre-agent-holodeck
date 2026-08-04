@@ -15,14 +15,19 @@
 #   ./scripts/trigger-test-incident.sh service-mesh-mtls
 #   ./scripts/trigger-test-incident.sh payments-api-gateway https://xxx.ngrok-free.dev
 #
-# The optional 2nd arg is the ServiceNow mock's base URL. When given, a
-# runbook_url.servicenow hint is added to custom_details — PagerDuty documents
-# this as the way to point the SRE Agent at a specific ServiceNow runbook when
-# it cannot infer one from the payload.
+# The optional 2nd arg is the ServiceNow mock's base URL. When given, the
+# payload gets a runbook_url.servicenow pointing directly at that scenario's KB
+# article — PagerDuty documents this as the way to point the SRE Agent at a
+# specific ServiceNow runbook when it cannot infer one from the payload.
 #
-# Scenario keys shared by the elasticsearch + servicenow mocks:
+# The KB number is ALSO included as a plain custom_details field. Observed
+# behaviour: when the agent only has search results it may decide none match
+# and ask the responder for an article number, but when the number is in the
+# payload it fetches the article directly.
+#
+# Scenario keys (shared with the elasticsearch/grafana mocks where applicable):
 #   payments-api-gateway  payments-orchestrator-sync  idempotency-token-service
-#   service-mesh-mtls     edge-waf-cdn
+#   service-mesh-mtls     edge-waf-cdn                checkout-api
 #
 # To resolve the incident afterwards, re-run with the printed dedup key:
 #   PD_EVENT_ACTION=resolve PD_DEDUP_KEY=<key> ./scripts/trigger-test-incident.sh
@@ -54,36 +59,51 @@ case "$SCENARIO" in
   payments-api-gateway)
     SUMMARY="payments-api-gateway: heap usage 92%, GC pauses lengthening"
     SAMPLE_QUERY='service:payments-api-gateway AND (heap OR OutOfMemoryError)'
-    COMPONENT="jvm-heap" ;;
+    COMPONENT="jvm-heap"; KB="KB0010023" ;;
   payments-orchestrator-sync)
     SUMMARY="payments-orchestrator-sync: circuit breaker OPEN to payments-rules-engine"
     SAMPLE_QUERY='service:payments-orchestrator-sync AND circuit_breaker'
-    COMPONENT="circuit-breaker" ;;
+    COMPONENT="circuit-breaker"; KB="KB0010031" ;;
   idempotency-token-service)
     SUMMARY="idempotency-token-service: DB connection pool exhausted"
     SAMPLE_QUERY='service:idempotency-token-service AND connection_pool'
-    COMPONENT="db-pool" ;;
+    COMPONENT="db-pool"; KB="KB0010045" ;;
   service-mesh-mtls)
     SUMMARY="service-mesh-mtls: elevated mTLS handshake failures"
     SAMPLE_QUERY='service:service-mesh-mtls AND (mtls OR certificate)'
-    COMPONENT="istio-mtls" ;;
+    COMPONENT="istio-mtls"; KB="KB0010052" ;;
   edge-waf-cdn)
     SUMMARY="edge-waf-cdn: cache miss ratio spike, WAF challenge surge"
     SAMPLE_QUERY='service:edge-waf-cdn AND (cache_miss OR waf_challenge)'
-    COMPONENT="cdn-edge" ;;
+    COMPONENT="cdn-edge"; KB="KB0010067" ;;
+  checkout-api)
+    SUMMARY="checkout-api: heap usage 88%, intermittent 503s at checkout"
+    SAMPLE_QUERY='service:checkout-api AND (heap OR OutOfMemoryError)'
+    COMPONENT="jvm-heap"; KB="KB0010012" ;;
   *)
     SUMMARY="${SCENARIO}: synthetic Holodeck test incident"
     SAMPLE_QUERY="service:${SCENARIO}"
-    COMPONENT="unknown" ;;
+    COMPONENT="unknown"; KB="" ;;
 esac
 
+# The KB number goes in the payload regardless, so the agent can fetch the
+# article directly instead of guessing from search results.
+KB_JSON=""
+if [ -n "$KB" ]; then
+  KB_JSON=",
+      \"kb_article\": \"${KB}\",
+      \"runbook\": \"ServiceNow ${KB}\""
+fi
+
+# When a base URL is supplied, point runbook_url.servicenow at that exact
+# article (the mock resolves by KB number as well as sys_id).
 RUNBOOK_JSON=""
-if [ -n "$SNOW_BASE" ]; then
-  RUNBOOK_JSON=$(cat <<JSON
-,
-      "runbook_url": { "servicenow": "${SNOW_BASE%/}/api/now/table/kb_knowledge?sysparm_query=${SCENARIO}" }
-JSON
-)
+if [ -n "$SNOW_BASE" ] && [ -n "$KB" ]; then
+  RUNBOOK_JSON=",
+      \"runbook_url\": { \"servicenow\": \"${SNOW_BASE%/}/api/now/table/sn_km_mr_st_kb_knowledge/${KB}\" }"
+elif [ -n "$SNOW_BASE" ]; then
+  RUNBOOK_JSON=",
+      \"runbook_url\": { \"servicenow\": \"${SNOW_BASE%/}/api/now/table/sn_km_mr_st_kb_knowledge?sysparm_query=number=${SCENARIO}\" }"
 fi
 
 if [ "$EVENT_ACTION" = "trigger" ]; then
@@ -104,7 +124,7 @@ if [ "$EVENT_ACTION" = "trigger" ]; then
       "service_name": "${SCENARIO}",
       "environment": "prod",
       "sample_query": "${SAMPLE_QUERY}",
-      "note": "Synthetic incident from Holodeck. All mocks key off the service name above."${RUNBOOK_JSON}
+      "note": "Synthetic incident from Holodeck. All mocks key off the service name above."${KB_JSON}${RUNBOOK_JSON}
     }
   }
 }
@@ -124,6 +144,7 @@ fi
 echo "Scenario:     ${SCENARIO}"
 echo "Action:       ${EVENT_ACTION}"
 echo "Dedup key:    ${DEDUP_KEY}"
+[ -n "$KB" ] && echo "KB article:   ${KB} (in custom_details.kb_article)"
 [ -n "$SNOW_BASE" ] && echo "Runbook hint: ${SNOW_BASE%/} (servicenow)"
 echo ""
 

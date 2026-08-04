@@ -16,7 +16,7 @@ Mock API services for demoing PagerDuty's SRE Agent connectors without real obse
 
 **ServiceNow auth:** OAuth2 *password* grant — username `demo-user`, password `demo-pass`, client ID `demo-client`, client secret `demo-secret`
 
-¹ **Confirmed working with PagerDuty** (OAuth + Knowledge search both observed live). Requires a DNS A record for `servicenow.holodeck.scsandbox.net` before the EC2 endpoint works — see [ServiceNow](#servicenow--oauth-connector).
+¹ **Live and verified end-to-end in PagerDuty** — OAuth token exchange, Knowledge search, and article retrieval all confirmed against this endpoint with a trusted Let's Encrypt cert. See [ServiceNow](#servicenow--oauth-connector) for the API details that took a few attempts to get right.
 
 > Note: PagerDuty-managed laptops cannot reach these hostnames directly — corporate Cloudflare WARP blocks the domain at the device level and returns a `303` to `blocked.teams.cloudflare.com`. This affects your laptop only, not PagerDuty's cloud. To test locally, pin the IP: `curl --resolve grafana.holodeck.scsandbox.net:443:35.88.248.161 ...`, or run the request from the EC2 box.
 
@@ -206,12 +206,18 @@ that same name, so all of them describe the *same* incident.
 read -rs "PD_ROUTING_KEY?PagerDuty routing key: " && export PD_ROUTING_KEY   # zsh
 
 ./scripts/trigger-test-incident.sh payments-api-gateway
-./scripts/trigger-test-incident.sh service-mesh-mtls https://<your-ngrok>.ngrok-free.dev
+./scripts/trigger-test-incident.sh service-mesh-mtls https://servicenow.holodeck.scsandbox.net
 ```
 
-The optional second argument adds a `custom_details.runbook_url.servicenow`
-hint, which is PagerDuty's documented way to point the agent at a specific
-runbook when it cannot infer one from the payload.
+The optional second argument is the ServiceNow base URL. When supplied, the
+payload gains a `custom_details.runbook_url.servicenow` pointing at that
+scenario's exact KB article — PagerDuty's documented way to point the agent at
+a specific runbook when it cannot infer one from the payload.
+
+The KB number is **always** included as `custom_details.kb_article` regardless.
+That matters: without it the agent may search, decide nothing matched, and ask
+the responder to supply an article number. With it, the agent fetches the
+article directly — confirmed working for `service-mesh-mtls` and `edge-waf-cdn`.
 
 Creating the incident does **not** by itself invoke the SRE Agent. Either open
 the incident and use the **SRE Agent** tab, or configure an Incident Workflow
@@ -224,20 +230,24 @@ The script prints a resolve command so test incidents do not pile up.
 
 ## ServiceNow — OAuth connector
 
-**This one works.** Unlike Dynatrace, PagerDuty genuinely calls this mock. Both halves were observed live on 2026-08-04 with `User-Agent: PagerDuty-Workflow-Automation`:
+**This one works**, end to end, verified in PagerDuty against the EC2 endpoint. Unlike Dynatrace, PagerDuty genuinely calls this mock. All three legs were observed live on 2026-08-04 with `User-Agent: PagerDuty-Workflow-Automation`:
 
 ```
-POST /oauth_token.do                              from 44.242.69.192
-GET  /api/now/table/sn_km_mr_st_kb_knowledge?...  from 54.213.187.133
+POST /oauth_token.do                              from 44.242.69.192   token grant
+GET  /api/now/table/sn_km_mr_st_kb_knowledge?...  from 54.213.187.133  search
+GET  /api/now/table/kb_knowledge/<sys_id>         from 54.213.187.133  fetch article
 ```
+
+The SRE Agent successfully returned runbook steps to the responder for
+`checkout-api`, `service-mesh-mtls` and `edge-waf-cdn` incidents.
 
 ### Why this works where Dynatrace did not
 The Dynatrace attempt failed because PagerDuty sends the OAuth token request to `sso.dynatrace.com` — a host shared by every Dynatrace SaaS tenant — rather than to the Environment URL you enter. No request from PagerDuty ever reached that mock.
 
 ServiceNow's token endpoint is **always per-instance**: `https://<instance>.service-now.com/oauth_token.do`. There is no shared global ServiceNow host, and the connector's URL field is free text, so PagerDuty has no other way to know which instance to authenticate against. It therefore derives the token endpoint from that field — which is exactly what the captured traffic shows.
 
-### The Knowledge table is NOT kb_knowledge
-This cost a 404 and an SRE Agent reporting "no matching KB article was found". PagerDuty queries the Knowledge Management **search table**:
+### The search table is NOT kb_knowledge
+This cost a 404 and an SRE Agent reporting "no matching KB article was found". *Searches* go to the Knowledge Management search table (single-article fetches go somewhere else — see [Endpoints](#endpoints) below):
 
 ```
 GET /api/now/table/sn_km_mr_st_kb_knowledge
@@ -249,24 +259,37 @@ GET /api/now/table/sn_km_mr_st_kb_knowledge
 
 Three non-obvious details, all of which the mock now handles:
 
-1. **Table name.** `sn_km_mr_st_kb_knowledge`, not the generic `kb_knowledge` table and not the dedicated `/sn_km_api/knowledge/articles` endpoint. Both of those are still served as aliases in case other PagerDuty code paths use them, but neither is what gets called.
+1. **Table name.** Searching uses `sn_km_mr_st_kb_knowledge`, not the generic `kb_knowledge` table. (`kb_knowledge` *is* used, but only for fetching one article by `sys_id` — see Endpoints.)
 2. **`sysparm_query=number=<terms>` is not an equality match.** PagerDuty packs free-text search terms after `number=`. Comparing that against the `number` field matches nothing. The mock strips the `field=` prefix and ranks articles by weighted term overlap (scenario key > title > body); an explicit `KB…` number still wins outright.
 3. **Field names.** PagerDuty asks for `content`, not `text`, plus `author`, `sys_updated_on` and `embedded_media`. `sysparm_fields` is honored, so the response contains exactly the requested keys in the requested order.
 
-Search deliberately **never returns an empty list** — an empty result reads to the SRE Agent as "no runbook exists", so an unmatched query leads with the general handbook instead.
+Two deliberate behaviours in the search results, both learned from watching the agent react:
 
-### DNS prerequisite
-There is **no wildcard** on this zone — every service has its own A record. Before the HTTPS endpoint works you need:
+- **Never return an empty list.** An empty result reads to the agent as "no runbook exists", so an unmatched query leads with the general handbook instead.
+- **Prune weak matches.** Returning every article that shares one common word buries the answer. The agent was observed receiving 7 articles — with the correct runbook ranked *first* — and still replying "returned 7 articles but none matched", because it does not treat array order as relevance. Results are now capped at 3 and filtered to within 50% of the top score, which in practice returns 1–2 articles per query.
+
+### DNS — done, but read this before adding the next mock
+The record is in place:
 ```
 servicenow.holodeck.scsandbox.net   A   35.88.248.161
 ```
-Without it, Caddy cannot complete the TLS-ALPN-01 challenge and will retry cert issuance indefinitely (harmless to the other four vhosts, but this one will serve an untrusted cert).
+There is **no wildcard** on this zone, so every new mock needs its own A record before Caddy can complete the TLS-ALPN-01 challenge. Three things that cost time here:
 
-If you would rather not wait on a DNS change, test via ngrok instead — it needs no DNS and no security group changes, and answers the same question:
+- **`holodeck.scsandbox.net` is not a delegated zone.** All records live in the `scsandbox.net` zone at Namecheap. The Host field must therefore be `servicenow.holodeck`, matching the existing `grafana.holodeck`, `arize.holodeck`, etc. Entering just `servicenow` creates `servicenow.scsandbox.net`, and entering the full FQDN creates `servicenow.holodeck.scsandbox.net.scsandbox.net`.
+- **Check the authoritative servers, not a public resolver.** The zone's SOA minimum is 3601s, so once a resolver has cached `NXDOMAIN` it keeps serving it for up to an hour. Google/Cloudflare/OpenDNS picked the record up within a minute, but Quad9 still returned `NXDOMAIN` half an hour later. Use `dig @dns1.registrar-servers.com <name>` for the truth.
+- **Force a fresh ACME attempt once DNS is live.** Caddy backs off (300s and rising) after failures, and falls back to the Let's Encrypt **staging** CA to avoid burning production rate limits. A staging cert looks fine in the logs but PagerDuty will reject it as untrusted, so recreate caddy and then check the issuer:
+  ```bash
+  docker compose -f ~/holodeck/docker-compose.yml up -d --force-recreate caddy
+  docker exec holodeck-caddy sh -c "ls /data/caddy/certificates/"   # want acme-v02..., not acme-staging-v02...
+  echo | openssl s_client -connect 127.0.0.1:443 -servername servicenow.holodeck.scsandbox.net 2>/dev/null \
+    | openssl x509 -noout -issuer -dates
+  ```
+
+To test without touching DNS at all, ngrok still works and needs no security group or cert changes:
 ```bash
 ./holodeck-local.sh servicenow      # flask on 3005 + ngrok
 ```
-Then point the connector's URL at the ngrok HTTPS URL and watch ngrok's inspector at `http://127.0.0.1:4040`.
+Point the connector's URL at the ngrok HTTPS URL and watch the inspector at `http://127.0.0.1:4040`.
 
 ### Endpoints
 
@@ -351,7 +374,7 @@ Requires: Python 3, `pip install -r requirements.txt`, ngrok configured with you
 | Region | `us-west-2` |
 | OS | Amazon Linux 2023 |
 | Security group | `Solution-Consulting-BVA` — `sg-075c3b95bf9657a5f` (inbound: 443 from 0.0.0.0/0, 22 and 4000 from specific /32s) |
-| DNS | `*.holodeck.scsandbox.net` → `35.88.248.161` (not proxied). Corporate Cloudflare WARP blocks the domain on managed laptops |
+| DNS | Individual A records in the `scsandbox.net` zone at Namecheap (`dns1/dns2.registrar-servers.com`), Host = `<service>.holodeck` → `35.88.248.161`. **No wildcard.** Not proxied. Corporate Cloudflare WARP blocks the domain on managed laptops |
 | S3 bucket | `sc-holodeck-demo` (fixtures) |
 | Project path | `~/holodeck/` |
 | Key | `solutions-consulting.pem` |

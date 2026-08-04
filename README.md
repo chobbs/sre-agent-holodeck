@@ -1,6 +1,6 @@
 # Holodeck — SRE Connector Simulator
 
-Mock API services for demoing PagerDuty's SRE Agent connectors without real observability infrastructure. All four mocks run simultaneously as independent HTTPS services on EC2, backed by scenario fixtures stored in S3.
+Mock API services for demoing PagerDuty's SRE Agent connectors without real observability infrastructure. All five mocks run simultaneously as independent HTTPS services on EC2, backed by scenario fixtures stored in S3.
 
 ## Live endpoints
 
@@ -10,22 +10,27 @@ Mock API services for demoing PagerDuty's SRE Agent connectors without real obse
 | Arize | `https://arize.holodeck.scsandbox.net` | Arize |
 | Splunk | `https://splunk.holodeck.scsandbox.net` | Splunk |
 | Elasticsearch | `https://elasticsearch.holodeck.scsandbox.net` | Elasticsearch |
+| ServiceNow | `https://servicenow.holodeck.scsandbox.net` | ServiceNow OAuth ¹ |
 
-**Auth token for all services:** `demo-token`
+**Auth token for Grafana, Arize, Splunk, Elasticsearch:** `demo-token`
+
+**ServiceNow auth:** OAuth2 *password* grant — username `demo-user`, password `demo-pass`, client ID `demo-client`, client secret `demo-secret`
+
+¹ Requires a DNS A record for `servicenow.holodeck.scsandbox.net` (see [ServiceNow](#servicenow--oauth-connector)). Whether PagerDuty will actually authenticate against it is **unverified** — that is the first thing to test.
 
 > Note: PagerDuty-managed laptops cannot reach these hostnames directly — corporate Cloudflare WARP blocks the domain at the device level and returns a `303` to `blocked.teams.cloudflare.com`. This affects your laptop only, not PagerDuty's cloud. To test locally, pin the IP: `curl --resolve grafana.holodeck.scsandbox.net:443:35.88.248.161 ...`, or run the request from the EC2 box.
 
 ## Architecture
 
 ```
-*.holodeck.scsandbox.net  →  Elastic IP (35.88.248.161)
+<service>.holodeck.scsandbox.net  →  Elastic IP (35.88.248.161)
                                        ↓
                             EC2 / Amazon Linux 2023
                                        ↓
                             Caddy (port 443, auto-TLS)
-              ┌────────────┬───────────┬──────────────────┐
-           grafana       arize       splunk        elasticsearch
-            :3000         :3001       :3002             :3003
+              ┌────────────┬───────────┬──────────────┬─────────────┐
+           grafana       arize       splunk    elasticsearch   servicenow
+            :3000         :3001       :3002        :3003          :3005
                                        ↑
                           S3: sc-holodeck-demo
 ```
@@ -44,6 +49,16 @@ In PagerDuty → Integrations → connector setup, use:
 | Arize | `https://arize.holodeck.scsandbox.net` | API Key | `demo-token` |
 | Splunk | `https://splunk.holodeck.scsandbox.net` | Authentication Token | `demo-token` |
 | Elasticsearch | `https://elasticsearch.holodeck.scsandbox.net` | API Key | `demo-token` |
+
+ServiceNow takes four fields instead of a single token:
+
+| Field | Value |
+|---|---|
+| URL | `https://servicenow.holodeck.scsandbox.net` |
+| ServiceNow Username | `demo-user` |
+| ServiceNow Password | `demo-pass` |
+| ServiceNow OAuth Client ID | `demo-client` |
+| ServiceNow OAuth Client Secret | `demo-secret` |
 
 ## Managing the stack (on EC2)
 
@@ -106,6 +121,7 @@ s3://sc-holodeck-demo/
   arize/scenarios.json
   splunk/scenarios.json
   elasticsearch/scenarios.json
+  servicenow/scenarios.json
 ```
 
 ## Scenario matching
@@ -114,14 +130,16 @@ Each service matches incoming requests against scenario keys using substring mat
 
 **Available scenarios per service:**
 
-| Grafana (logs) | Grafana (metrics) | Arize | Splunk | Elasticsearch |
-|---|---|---|---|---|
-| checkout-api | checkout-api | checkout-agent | suspicious-login | payments-api-gateway |
-| payments-svc | payments-svc | fraud-detection-model | privilege-escalation | payments-orchestrator-sync |
-| orders-db-proxy | orders-db-proxy | rag-retrieval-agent | data-exfiltration | idempotency-token-service |
-| auth-service | auth-service | hallucination | malware-detection | payments-rules-engine |
-| search-api | search-api | support-chatbot | firewall-policy-violation | service-mesh-mtls |
-| *(default)* | *(default)* | *(default)* | *(default)* | *(default)* |
+| Grafana (logs) | Grafana (metrics) | Arize | Splunk | Elasticsearch | ServiceNow |
+|---|---|---|---|---|---|
+| checkout-api | checkout-api | checkout-agent | suspicious-login | payments-api-gateway | payments-api-gateway |
+| payments-svc | payments-svc | fraud-detection-model | privilege-escalation | payments-orchestrator-sync | payments-orchestrator-sync |
+| orders-db-proxy | orders-db-proxy | rag-retrieval-agent | data-exfiltration | idempotency-token-service | idempotency-token-service |
+| auth-service | auth-service | hallucination | malware-detection | payments-rules-engine | service-mesh-mtls |
+| search-api | search-api | support-chatbot | firewall-policy-violation | service-mesh-mtls | edge-waf-cdn |
+| *(default)* | *(default)* | *(default)* | *(default)* | *(default)* | *(default)* |
+
+ServiceNow returns **runbook KB articles** rather than logs or metrics — a different content type from the other four. The articles are written to pair with the existing Payments API scenarios, so the SRE Agent can surface a relevant runbook while investigating the same incident the other mocks are describing.
 
 ## Project structure
 
@@ -129,7 +147,7 @@ Each service matches incoming requests against scenario keys using substring mat
 sre-conn-simulator/
 ├── holodeck.sh              # EC2 stack manager (docker compose wrapper)
 ├── holodeck-local.sh        # Local dev runner (Flask + ngrok, one service at a time)
-├── docker-compose.yml       # All 4 mocks + Caddy
+├── docker-compose.yml       # All 5 mocks + Caddy
 ├── Caddyfile                # HTTPS reverse proxy config
 ├── requirements.txt         # Shared Python deps (Flask, boto3)
 ├── .env.example             # Environment variable template
@@ -151,9 +169,73 @@ sre-conn-simulator/
 │   ├── app.py               # Elasticsearch API mock (Lucene/KQL/EQL search)
 │   ├── Dockerfile
 │   └── fixtures/scenarios.json
+├── servicenow-mock/
+│   ├── app.py               # ServiceNow mock (OAuth2 password grant + Knowledge)
+│   ├── Dockerfile
+│   └── fixtures/scenarios.json  # Runbook KB articles
 └── scripts/
     ├── bootstrap-ec2.sh     # Fresh instance setup (Docker + Buildx + Compose)
     └── sync-fixtures-to-s3.sh  # Upload all fixture JSON to S3
+```
+
+## ServiceNow — OAuth connector
+
+This is the newest mock and the only one whose PagerDuty integration is **not yet proven**. Read this before spending time on it.
+
+### Why it might work where Dynatrace did not
+The Dynatrace attempt failed because PagerDuty appears to send the OAuth token request to `sso.dynatrace.com` — a host shared by every Dynatrace SaaS tenant — rather than to the Environment URL you enter. No request from PagerDuty ever reached the mock.
+
+ServiceNow is structurally different: its token endpoint is **always per-instance**, `https://<instance>.service-now.com/oauth_token.do`. There is no shared global ServiceNow host, and the connector's URL field is free text, so PagerDuty has no other way to know which instance to authenticate against. That is a real reason for optimism — but it is still **unverified**.
+
+### Test the one thing that matters first
+Before trusting anything downstream, confirm a request actually arrives. Watch the mock while saving the connector:
+```bash
+# app-level: shows the request path and status
+docker logs -f --since 1m holodeck-servicenow
+
+# edge-level: shows the real client IP and User-Agent (access logging is on
+# for this vhost specifically, unlike the other four)
+docker logs -f --since 1m holodeck-caddy 2>&1 | grep --line-buffered "handled request"
+```
+- `POST /oauth_token.do ... 200` → PagerDuty honors the URL field. Everything downstream is already built and tested.
+- Nothing but healthcheck traffic → same dead end as Dynatrace. Stop there; nothing downstream matters.
+- `401 invalid_client` / `401 invalid_grant` → PagerDuty reached the mock but the credentials do not match. Check for stray whitespace.
+
+### DNS prerequisite
+There is **no wildcard** on this zone — every service has its own A record. Before the HTTPS endpoint works you need:
+```
+servicenow.holodeck.scsandbox.net   A   35.88.248.161
+```
+Without it, Caddy cannot complete the TLS-ALPN-01 challenge and will retry cert issuance indefinitely (harmless to the other four vhosts, but this one will serve an untrusted cert).
+
+If you would rather not wait on a DNS change, test via ngrok instead — it needs no DNS and no security group changes, and answers the same question:
+```bash
+./holodeck-local.sh servicenow      # flask on 3005 + ngrok
+```
+Then point the connector's URL at the ngrok HTTPS URL and watch ngrok's inspector at `http://127.0.0.1:4040`.
+
+### Two Knowledge endpoints, deliberately
+It is unconfirmed which endpoint PagerDuty's "Knowledge" tool calls, so both are implemented:
+
+| Endpoint | Confidence |
+|---|---|
+| `GET /api/now/table/kb_knowledge` | **Confirmed** — generic Table API, well documented |
+| `GET /api/now/table/kb_knowledge/<sys_id>` | **Confirmed** — fetch one article |
+| `GET /sn_km_api/knowledge/articles` | **Best guess** — the dedicated Knowledge Management API is real, but its exact response JSON was not confirmed |
+| `GET /sn_km_api/knowledge/articles/<sys_id>` | **Best guess** |
+
+Whichever one appears in the logs is the real one; the other can be deleted. Same approach as the Arize `/v2/spaces` vs `/v2/projects` ambiguity.
+
+### Exercising it directly
+```bash
+# token (password grant — note: NOT client_credentials)
+TOK=$(curl -s -X POST https://servicenow.holodeck.scsandbox.net/oauth_token.do \
+  -d grant_type=password -d client_id=demo-client -d client_secret=demo-secret \
+  -d username=demo-user -d password=demo-pass | jq -r .access_token)
+
+# knowledge search
+curl -s -H "Authorization: Bearer $TOK" \
+  "https://servicenow.holodeck.scsandbox.net/api/now/table/kb_knowledge?sysparm_query=payments-api-gateway" | jq .
 ```
 
 ## Admin endpoint

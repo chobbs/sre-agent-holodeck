@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Holodeck — local dev runner for the SRE Agent PoV mock services
-# (grafana-mock, arize-mock, splunk-mock, elasticsearch-mock)
+# (grafana-mock, arize-mock, splunk-mock, elasticsearch-mock, servicenow-mock)
 # — runs one service (flask + ngrok) at a time for local connector testing.
 #
 # "Computer, run a payments outage simulation." Runs ONLY ONE service
@@ -14,6 +14,7 @@
 #   ./holodeck.sh arize           # switch to arize-mock, no menu
 #   ./holodeck.sh splunk          # switch to splunk-mock, no menu
 #   ./holodeck.sh elasticsearch   # switch to elasticsearch-mock, no menu
+#   ./holodeck.sh servicenow      # switch to servicenow-mock, no menu
 #   ./holodeck.sh stop            # stop whichever is currently running
 #   ./holodeck.sh status          # show what's currently running
 
@@ -36,6 +37,7 @@ port_for() {
     arize)         echo 3001 ;;
     splunk)        echo 3002 ;;
     elasticsearch) echo 3003 ;;
+    servicenow)    echo 3005 ;;
     *) echo "" ;;
   esac
 }
@@ -46,6 +48,7 @@ dir_for() {
     arize)         echo "$BASE_DIR/arize-mock" ;;
     splunk)        echo "$BASE_DIR/splunk-mock" ;;
     elasticsearch) echo "$BASE_DIR/elasticsearch-mock" ;;
+    servicenow)    echo "$BASE_DIR/servicenow-mock" ;;
     *) echo "" ;;
   esac
 }
@@ -94,7 +97,7 @@ start_service() {
   dir=$(dir_for "$name")
 
   if [ -z "$port" ]; then
-    echo "Unknown service: $name (expected grafana, arize, splunk, or elasticsearch)"
+    echo "Unknown service: $name (expected grafana, arize, splunk, elasticsearch, or servicenow)"
     return 1
   fi
   if [ ! -d "$dir" ]; then
@@ -116,10 +119,22 @@ start_service() {
 
   echo "Starting $name (flask on port $port + ngrok)..."
 
+  # Most mocks just need MOCK_API_TOKEN. ServiceNow uses an OAuth2 password
+  # grant, so it needs client id/secret plus username/password.
+  local -a env_vars=(MOCK_API_TOKEN=demo-token)
+  if [ "$name" = "servicenow" ]; then
+    env_vars+=(
+      MOCK_CLIENT_ID=demo-client
+      MOCK_CLIENT_SECRET=demo-secret
+      MOCK_USERNAME=demo-user
+      MOCK_PASSWORD=demo-pass
+    )
+  fi
+
   if command -v setsid >/dev/null 2>&1; then
-    ( cd "$dir" && setsid env MOCK_API_TOKEN=demo-token python3 app.py < /dev/null > "$FLASK_LOG_FILE" 2>&1 & echo $! > "$FLASK_PID_FILE" ) < /dev/null > /dev/null 2>&1
+    ( cd "$dir" && setsid env "${env_vars[@]}" python3 app.py < /dev/null > "$FLASK_LOG_FILE" 2>&1 & echo $! > "$FLASK_PID_FILE" ) < /dev/null > /dev/null 2>&1
   else
-    ( cd "$dir" && MOCK_API_TOKEN=demo-token nohup python3 app.py < /dev/null > "$FLASK_LOG_FILE" 2>&1 & echo $! > "$FLASK_PID_FILE" ) < /dev/null > /dev/null 2>&1
+    ( cd "$dir" && env "${env_vars[@]}" nohup python3 app.py < /dev/null > "$FLASK_LOG_FILE" 2>&1 & echo $! > "$FLASK_PID_FILE" ) < /dev/null > /dev/null 2>&1
   fi
   sleep 1
   if is_running "$FLASK_PID_FILE"; then
@@ -173,19 +188,21 @@ show_menu() {
   echo "2) Arize          (port 3001)"
   echo "3) Splunk         (port 3002)"
   echo "4) Elasticsearch  (port 3003)"
-  echo "5) Stop"
-  echo "6) Status"
-  echo "7) Quit"
+  echo "5) ServiceNow     (port 3005)"
+  echo "6) Stop"
+  echo "7) Status"
+  echo "8) Quit"
   echo ""
-  read -rp "Choose an option [1-7]: " choice
+  read -rp "Choose an option [1-8]: " choice
   case "$choice" in
     1) start_service grafana ;;
     2) start_service arize ;;
     3) start_service splunk ;;
     4) start_service elasticsearch ;;
-    5) stop_current ;;
-    6) status ;;
-    7) echo "Exiting the holodeck."; exit 0 ;;
+    5) start_service servicenow ;;
+    6) stop_current ;;
+    7) status ;;
+    8) echo "Exiting the holodeck."; exit 0 ;;
     *) echo "Invalid option: $choice" ;;
   esac
 }
@@ -193,10 +210,10 @@ show_menu() {
 run_main() {
   if [ "${1:-}" != "" ]; then
     case "$1" in
-      grafana|arize|splunk|elasticsearch) start_service "$1" ;;
+      grafana|arize|splunk|elasticsearch|servicenow) start_service "$1" ;;
       stop)   stop_current ;;
       status) status ;;
-      *) echo "Usage: $0 [grafana|arize|splunk|elasticsearch|stop|status]"; exit 1 ;;
+      *) echo "Usage: $0 [grafana|arize|splunk|elasticsearch|servicenow|stop|status]"; exit 1 ;;
     esac
     exit 0
   fi

@@ -33,3 +33,26 @@ elasticsearch.holodeck.scsandbox.net {
     }
     reverse_proxy elasticsearch:3003
 }
+
+# ServiceNow OAuth connector mock.
+# REQUIRES an A record: servicenow.holodeck.scsandbox.net -> 35.88.248.161
+# There is no wildcard on this zone, so without that record Caddy cannot
+# complete the TLS-ALPN-01 challenge and will retry cert issuance forever.
+#
+# Access logging is ON deliberately. The Dynatrace attempt burned a lot of
+# time because we could not tell whether PagerDuty ever contacted the origin
+# at all — the app log only shows Caddy's container IP. These logs record the
+# real client IP, path, status and User-Agent, so the very first connector
+# save answers the only question that matters.
+servicenow.holodeck.scsandbox.net {
+    tls {
+        issuer acme {
+            disable_http_challenge
+        }
+    }
+    log {
+        output stderr
+        format json
+    }
+    reverse_proxy servicenow:3005
+}

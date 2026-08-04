@@ -95,6 +95,33 @@ services:
       retries: 3
       start_period: 10s
 
+  servicenow:
+    build:
+      context: .
+      dockerfile: servicenow-mock/Dockerfile
+    container_name: holodeck-servicenow
+    restart: unless-stopped
+    expose:
+      - "3005"
+    environment:
+      # ServiceNow OAuth uses the password grant: all four values are needed.
+      - MOCK_CLIENT_ID=${SNOW_CLIENT_ID:-demo-client}
+      - MOCK_CLIENT_SECRET=${SNOW_CLIENT_SECRET:-demo-secret}
+      - MOCK_USERNAME=${SNOW_USERNAME:-demo-user}
+      - MOCK_PASSWORD=${SNOW_PASSWORD:-demo-pass}
+      - PORT=3005
+      - FIXTURES_S3_BUCKET=${FIXTURES_S3_BUCKET:-}
+      - FIXTURES_S3_KEY=servicenow/scenarios.json
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-2}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3005/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   caddy:
     image: caddy:2-alpine
     container_name: holodeck-caddy
@@ -112,6 +139,7 @@ services:
       - arize
       - splunk
       - elasticsearch
+      - servicenow
 
 volumes:
   caddy_data:

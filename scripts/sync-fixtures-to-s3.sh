@@ -9,6 +9,7 @@
 #   s3://<bucket>/arize/scenarios.json
 #   s3://<bucket>/splunk/scenarios.json
 #   s3://<bucket>/elasticsearch/scenarios.json
+#   s3://<bucket>/servicenow/scenarios.json
 #
 # Usage:
 #   ./scripts/sync-fixtures-to-s3.sh <bucket-name>
@@ -48,8 +49,9 @@ upload "${BASE}/grafana-mock/fixtures/metric_scenarios.json" "grafana/metric_sce
 upload "${BASE}/arize-mock/fixtures/scenarios.json"          "arize/scenarios.json"
 upload "${BASE}/splunk-mock/fixtures/scenarios.json"         "splunk/scenarios.json"
 upload "${BASE}/elasticsearch-mock/fixtures/scenarios.json"  "elasticsearch/scenarios.json"
+upload "${BASE}/servicenow-mock/fixtures/scenarios.json"     "servicenow/scenarios.json"
 
 echo ""
-echo "Done. All 5 fixture files synced to s3://${BUCKET}/"
+echo "Done. All 6 fixture files synced to s3://${BUCKET}/"
 echo ""
 echo "To hot-reload without restarting containers, POST to /admin/reload on each service."

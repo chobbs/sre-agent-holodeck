@@ -1,0 +1,56 @@
+{
+  "default": {
+    "description": "Fallback when no keyword matches",
+    "sys_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c301",
+    "number": "KB0000001",
+    "short_description": "General Incident Response Handbook",
+    "text": "For incidents not covered by a specific runbook, follow the general incident response process: 1) Acknowledge the page within 5 minutes. 2) Check the service status dashboard for related alerts. 3) Post an initial status update in #incident-response. 4) Escalate to the on-call secondary if not resolved within 30 minutes. 5) Open a postmortem doc once resolved.",
+    "kb_category": "General",
+    "workflow_state": "published"
+  },
+  "payments-api-gateway": {
+    "description": "Runbook for Payments API Gateway heap/OOM incidents",
+    "sys_id": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d402",
+    "number": "KB0010023",
+    "short_description": "Runbook: Payments API Gateway High Heap Usage / OOM Recovery",
+    "text": "Symptoms: heap_usage_percent climbing past 80%, GC pauses lengthening, eventual OutOfMemoryError and pod restart. Steps: 1) Check the Grafana heap_usage_percent dashboard for payments-api-gateway to confirm the trend. 2) If heap is still climbing and no restart has occurred yet, consider a proactive rolling restart to avoid an uncontrolled OOM kill: `kubectl rollout restart deployment/payments-api-gateway -n prod`. 3) After restart, monitor heap for 15 minutes to confirm it stabilizes below 60%. 4) If heap climbs again quickly post-restart, this indicates an active leak, not a one-off spike — escalate to the Gateway team and reference incident history for recurring OOM patterns. 5) Check recent deployments for a correlated release.",
+    "kb_category": "Payments Platform",
+    "workflow_state": "published"
+  },
+  "payments-orchestrator-sync": {
+    "description": "Runbook for Payments Orchestrator Sync circuit breaker trips",
+    "sys_id": "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e503",
+    "number": "KB0010031",
+    "short_description": "Runbook: Payments Orchestrator (Sync) Circuit Breaker Trips",
+    "text": "Symptoms: upstream_latency_ms spiking, circuit breaker transitioning from CLOSED to OPEN, downstream calls to payments-rules-engine failing fast. Steps: 1) Confirm payments-rules-engine's own health/latency before assuming the orchestrator is at fault — this is very often a downstream symptom, not a root cause. 2) Check for a recent payments-rules-engine deployment or scaling event. 3) If payments-rules-engine is healthy but the breaker remains OPEN, manually reset it via the ops console: `POST /admin/circuit-breaker/reset?service=payments-rules-engine`. 4) If the breaker keeps re-tripping, escalate to the Orchestrator team rather than repeatedly resetting — that usually means the underlying dependency issue hasn't actually been fixed.",
+    "kb_category": "Payments Platform",
+    "workflow_state": "published"
+  },
+  "idempotency-token-service": {
+    "description": "Runbook for Idempotency Token Service connection pool exhaustion",
+    "sys_id": "d4e5f6a1b2c3d4e5f6a1b2c3d4e5f604",
+    "number": "KB0010045",
+    "short_description": "Runbook: Idempotency Token Service Connection Pool Exhaustion",
+    "text": "Symptoms: connection_pool_used approaching the configured max, new connections rejected, token lookup timeouts. Steps: 1) Check connection_pool_used against the configured pool max in the service's Helm values. 2) If the pool is genuinely exhausted (not a leak), a temporary pool size increase can relieve pressure: update `idempotencyTokenService.dbPool.maxSize` and roll the deployment. 3) If pool usage doesn't drop after increasing size, suspect a connection leak in a recent code change — check for missing connection.close() calls in recently merged PRs. 4) This service sits in the critical path for duplicate-charge prevention — treat pool exhaustion here as high severity even if user-facing impact seems minor, since a failure mode here risks double-charging customers.",
+    "kb_category": "Payments Platform",
+    "workflow_state": "published"
+  },
+  "service-mesh-mtls": {
+    "description": "Runbook for Service Mesh mTLS certificate and handshake failures",
+    "sys_id": "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a705",
+    "number": "KB0010052",
+    "short_description": "Runbook: Service Mesh / mTLS Certificate Rotation Failures",
+    "text": "Symptoms: elevated mTLS handshake failure rate, certificate validation errors referencing an expired leaf cert, istiod control-plane 503s. Steps: 1) Identify which workload's certificate is expiring or expired via `istioctl proxy-config secret <pod> -n <namespace>`. 2) Trigger a manual cert rotation for the affected workload: `istioctl experimental authz check` followed by a sidecar restart to force cert re-issuance. 3) If istiod itself is returning 503s (not just one workload's cert), check control-plane resource pressure before assuming it's cert-specific. 4) Certificates in this mesh are configured for automatic rotation 7 days before expiry — a manual rotation being needed usually means the automatic rotation job itself failed, which is worth investigating separately once the immediate incident is resolved.",
+    "kb_category": "Payments Platform",
+    "workflow_state": "published"
+  },
+  "edge-waf-cdn": {
+    "description": "Runbook for Edge WAF/CDN cache-miss spikes and WAF challenge surges",
+    "sys_id": "f6a1b2c3d4e5f6a1b2c3d4e5f6a1b806",
+    "number": "KB0010067",
+    "short_description": "Runbook: Edge WAF/CDN Cache Miss Spike and WAF Challenge Surge",
+    "text": "Symptoms: cache_miss_ratio_percent spiking well above baseline, WAF challenge rate elevated, origin latency climbing as more requests bypass cache. Steps: 1) Check whether the cache miss spike correlates with a recent CDN config or cache-key change — this is the most common cause. 2) If it's a WAF challenge surge specifically (not just cache), check threat-intel feed updates — an overly broad rule update can misclassify legitimate traffic as suspicious. 3) A manual cache warm can help recover faster: trigger the cache-warm job for the top 100 URLs by traffic. 4) If WAF challenges are the primary driver, consider temporarily loosening the affected rule's sensitivity while the root cause is investigated, rather than disabling it outright.",
+    "kb_category": "Payments Platform",
+    "workflow_state": "published"
+  }
+}

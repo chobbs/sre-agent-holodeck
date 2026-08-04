@@ -17,8 +17,18 @@ ServiceNow's OAuth token endpoint is always per-instance, so there is no
 shared global host for PagerDuty to shortcut to, the way sso.dynatrace.com is
 shared across every Dynatrace tenant. That is why this one works.
 
-*** THE KNOWLEDGE TABLE IS NOT kb_knowledge ***
-PagerDuty queries the Knowledge Management search table:
+*** PAGERDUTY USES TWO DIFFERENT TABLES ***
+Confirmed from captured traffic:
+
+  SEARCH        GET /api/now/table/sn_km_mr_st_kb_knowledge?sysparm_query=...
+  FETCH ONE     GET /api/now/table/kb_knowledge/<sys_id>
+
+Both are required. Searching hits the Knowledge Management search table, but
+fetching a single article by sys_id uses the GENERIC kb_knowledge table. Do
+not delete either one — dropping `kb_knowledge` as "unused" would break the
+direct-fetch path that the SRE Agent relies on after it picks an article.
+
+The search table's query shape:
 
   GET /api/now/table/sn_km_mr_st_kb_knowledge
         ?sysparm_fields=number,short_description,content,sys_updated_on,
@@ -28,10 +38,10 @@ PagerDuty queries the Knowledge Management search table:
         &sysparm_query=number=<free text search terms>
 
 Two things learned the hard way from a 404 in the SRE Agent:
-  1. The table is `sn_km_mr_st_kb_knowledge`. Neither the generic
-     `kb_knowledge` table nor the dedicated `/sn_km_api/knowledge/articles`
-     endpoint is what gets called. Both are still served here as aliases in
-     case other PagerDuty code paths use them.
+  1. Search uses `sn_km_mr_st_kb_knowledge`, NOT the generic `kb_knowledge`
+     table (which is used for fetch-by-sys_id) and not the dedicated
+     `/sn_km_api/knowledge/articles` endpoint (never observed in use, kept
+     only as a low-cost alias).
   2. PagerDuty packs free-text search terms into `sysparm_query=number=...`,
      which is not a real equality match on the number field. So matching
      scores how many query terms appear in each article rather than comparing
@@ -45,11 +55,12 @@ Search never returns an empty list. An empty result reads to the SRE Agent as
 "no runbook exists", which is worse for a demo than the general handbook.
 
 Endpoints:
-  POST /oauth_token.do                                  OAuth2 password grant
-  GET  /api/now/table/sn_km_mr_st_kb_knowledge[/<id>]   CONFIRMED: what PD calls
-  GET  /api/now/table/kb_knowledge[/<id>]               alias, generic table
-  GET  /sn_km_api/knowledge/articles[/<id>]             alias, dedicated KM API
-  POST /admin/reload                                    hot-reload from S3
+  POST /oauth_token.do                                 OAuth2 password grant
+  GET  /api/now/table/sn_km_mr_st_kb_knowledge[/<id>]  CONFIRMED — PD searches here
+  GET  /api/now/table/kb_knowledge[/<id>]              CONFIRMED — PD fetches
+                                                       single articles here
+  GET  /sn_km_api/knowledge/articles[/<id>]            alias, never observed
+  POST /admin/reload                                   hot-reload from S3
 
 Auth for the Knowledge endpoints: `Authorization: Bearer <token>`. This mock
 does not validate the token cryptographically, it only checks that some
@@ -107,12 +118,21 @@ def load_fixtures(local_path: Path, s3_key_env: str = "FIXTURES_S3_KEY") -> dict
     bucket = os.environ.get("FIXTURES_S3_BUCKET", "")
     key = os.environ.get(s3_key_env, "")
     if bucket and key:
-        import boto3  # noqa: PLC0415
-        s3 = boto3.client("s3")
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        data = json.loads(obj["Body"].read().decode("utf-8"))
-        print(f"[holodeck] loaded fixtures from s3://{bucket}/{key}", flush=True)
-        return data
+        try:
+            import boto3  # noqa: PLC0415
+            s3 = boto3.client("s3")
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            data = json.loads(obj["Body"].read().decode("utf-8"))
+            print(f"[holodeck] loaded fixtures from s3://{bucket}/{key}", flush=True)
+            return data
+        except Exception as exc:  # noqa: BLE001
+            # Do NOT die here. On first deploy of a new mock the S3 object does
+            # not exist yet, and raising turns that into a container crash-loop
+            # (observed: NoSuchKey restarting every few seconds) instead of a
+            # service that simply serves its baked-in fixtures. Fail loudly,
+            # then carry on with the local copy.
+            print(f"[holodeck] WARNING: could not load s3://{bucket}/{key} ({exc.__class__.__name__}: {exc})", flush=True)
+            print(f"[holodeck] falling back to local fixtures at {local_path}", flush=True)
     with open(local_path) as f:
         data = json.load(f)
     print(f"[holodeck] loaded fixtures from {local_path}", flush=True)

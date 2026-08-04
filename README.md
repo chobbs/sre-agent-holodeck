@@ -80,6 +80,21 @@ bash ~/holodeck/holodeck.sh down              # stop the full stack
 bash ~/holodeck/holodeck.sh deploy            # git pull + rebuild changed containers
 ```
 
+### Gotcha: a new mock needs its S3 fixture uploaded *before* first deploy
+`FIXTURES_S3_BUCKET` is set in `.env` on the instance, so every mock loads its
+fixtures from S3 rather than the copy baked into the image. If the S3 object
+does not exist yet, the container used to die on startup and crash-loop
+(`botocore.errorfactory.NoSuchKey`, restarting every few seconds).
+
+The ServiceNow mock now warns and falls back to its local fixture instead of
+crashing, but **the other four still crash in this situation**. So when adding a
+mock, upload its fixture first:
+```bash
+aws s3 cp <mock>/fixtures/scenarios.json s3://sc-holodeck-demo/<mock>/scenarios.json
+# or, for everything at once:
+bash ~/holodeck/holodeck.sh sync-fixtures
+```
+
 ### Gotcha: Caddyfile changes need a container recreate
 `Caddyfile` is mounted into the caddy container as a **single-file bind mount**, which binds to the file's inode. `git pull` writes a new file and renames it, so a running caddy container keeps serving the **old** config. Running `caddy reload` does not help — it validates and reloads the stale file and reports `Valid configuration`, which makes the failure silent.
 
@@ -255,12 +270,19 @@ Then point the connector's URL at the ngrok HTTPS URL and watch ngrok's inspecto
 
 ### Endpoints
 
+PagerDuty uses **two different tables**, and both are required:
+
 | Endpoint | Status |
 |---|---|
-| `POST /oauth_token.do` | **Confirmed** — OAuth2 password grant, called by PD |
-| `GET /api/now/table/sn_km_mr_st_kb_knowledge[/<id>]` | **Confirmed** — this is what PD queries |
-| `GET /api/now/table/kb_knowledge[/<id>]` | Alias — generic Table API, not observed in use |
-| `GET /sn_km_api/knowledge/articles[/<id>]` | Alias — dedicated KM API, shape is a guess, not observed in use |
+| `POST /oauth_token.do` | **Confirmed** — OAuth2 password grant |
+| `GET /api/now/table/sn_km_mr_st_kb_knowledge` | **Confirmed** — PD *searches* here |
+| `GET /api/now/table/kb_knowledge/<sys_id>` | **Confirmed** — PD *fetches a single article* here |
+| `GET /sn_km_api/knowledge/articles[/<id>]` | Alias — dedicated KM API, shape is a guess, never observed in use |
+
+Do not "clean up" `kb_knowledge` as unused. Search goes to the Knowledge
+Management search table, but once the agent picks an article it fetches it by
+`sys_id` from the **generic** `kb_knowledge` table — confirmed in captured
+traffic. Deleting it would break retrieval after a successful search.
 
 ### Verifying article retrieval without PagerDuty
 Before blaming the connector, confirm the mock itself resolves the article. This runs the same round trip the SRE Agent does — token grant, PD's exact search query, then a direct fetch by KB number — and asserts the expected article is the top hit:

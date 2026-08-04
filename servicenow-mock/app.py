@@ -420,6 +420,88 @@ app.add_url_rule("/api/now/table/kb_knowledge/<sys_id>",
                  "kb_get_one", _table_get_one, methods=["GET"])
 
 
+# ── Article-view URLs (human/document style, carry sys_id) ────────────────────
+# The SRE Agent rejects a runbook URL that has no sys_id query parameter:
+#   "could not be fetched — a valid URL with sys_id is required"
+#   "Provide a valid ServiceNow KB0010052 URL (with sys_id query parameter)"
+# It refuses CLIENT-SIDE, so no request ever reaches the server — which is why
+# the mock's logs showed a clean 200 for every request yet the agent still
+# reported a failed fetch. An API path ending in the KB number is not enough.
+#
+# These are the real ServiceNow article-view shapes, all keyed by sys_id:
+#   /kb_view.do?sys_id=<sys_id>            (also accepts sysparm_article=KB…)
+#   /kb?id=kb_article_view&sys_id=<sys_id>
+#   /nav_to.do?uri=kb_knowledge.do?sys_id=<sys_id>
+#
+# Deliberately NOT bearer-protected: these are document links, and whatever
+# fetches them may not carry the connector's OAuth token. The fixtures are
+# public demo runbooks, so there is nothing to protect.
+
+def _article_from_request():
+    """Resolve an article from sys_id / sysparm_article / uri= in the query."""
+    for param in ("sys_id", "sysparm_sys_id"):
+        val = request.args.get(param)
+        if val and val in ARTICLES_BY_SYS_ID:
+            return ARTICLES_BY_SYS_ID[val]
+    for param in ("sysparm_article", "number", "id"):
+        val = (request.args.get(param) or "").upper()
+        if val in ARTICLES_BY_NUMBER:
+            return ARTICLES_BY_NUMBER[val]
+    # nav_to.do?uri=kb_knowledge.do?sys_id=<id> — sys_id is nested in `uri`
+    uri = request.args.get("uri") or ""
+    for m in re.findall(r"sys_id=([a-f0-9]{32})", uri):
+        if m in ARTICLES_BY_SYS_ID:
+            return ARTICLES_BY_SYS_ID[m]
+    for m in re.findall(r"(KB\d+)", uri, flags=re.IGNORECASE):
+        if m.upper() in ARTICLES_BY_NUMBER:
+            return ARTICLES_BY_NUMBER[m.upper()]
+    return None
+
+
+def _article_response(scenario: dict):
+    """JSON when asked for JSON, otherwise a minimal KB article page."""
+    accept = (request.headers.get("Accept") or "").lower()
+    if "application/json" in accept and "text/html" not in accept:
+        return jsonify({"result": kb_record(scenario)})
+
+    r = kb_record(scenario)
+    # content is already HTML-escaped in the fixtures, so it is safe inline.
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{r['number']} - {r['short_description']}</title></head>
+<body>
+<article>
+  <h1>{r['short_description']}</h1>
+  <p><strong>Article:</strong> {r['number']}<br>
+     <strong>Knowledge base:</strong> {r['kb_knowledge_base']}<br>
+     <strong>Category:</strong> {r['kb_category']}<br>
+     <strong>State:</strong> {r['workflow_state']}<br>
+     <strong>Author:</strong> {r['author']}<br>
+     <strong>Updated:</strong> {r['sys_updated_on']}<br>
+     <strong>sys_id:</strong> {r['sys_id']}</p>
+  <div class="kb-content"><p>{r['content']}</p></div>
+</article>
+</body></html>"""
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+def _kb_view():
+    scenario = _article_from_request()
+    if scenario is None:
+        return jsonify({
+            "error": {
+                "message": "No Record found",
+                "detail": "Provide sys_id=<32-char sys_id> or sysparm_article=KB…",
+            }
+        }), 404
+    return _article_response(scenario)
+
+
+app.add_url_rule("/kb_view.do", "kb_view", _kb_view, methods=["GET"])
+app.add_url_rule("/kb", "kb_portal", _kb_view, methods=["GET"])
+app.add_url_rule("/nav_to.do", "nav_to", _kb_view, methods=["GET"])
+app.add_url_rule("/sp", "sp_portal", _kb_view, methods=["GET"])
+
+
 # ── Knowledge: dedicated KM API (alias, unconfirmed shape) ────────────────────
 
 @app.route("/sn_km_api/knowledge/articles", methods=["GET"])

@@ -176,7 +176,8 @@ sre-conn-simulator/
 └── scripts/
     ├── bootstrap-ec2.sh     # Fresh instance setup (Docker + Buildx + Compose)
     ├── sync-fixtures-to-s3.sh   # Upload all fixture JSON to S3
-    └── trigger-test-incident.sh # Fire a test incident at PagerDuty
+    ├── trigger-test-incident.sh # Fire a test incident at PagerDuty
+    └── verify-servicenow.sh     # Round-trip check of the ServiceNow mock
 ```
 
 ## Firing a test incident
@@ -260,6 +261,18 @@ Then point the connector's URL at the ngrok HTTPS URL and watch ngrok's inspecto
 | `GET /api/now/table/sn_km_mr_st_kb_knowledge[/<id>]` | **Confirmed** — this is what PD queries |
 | `GET /api/now/table/kb_knowledge[/<id>]` | Alias — generic Table API, not observed in use |
 | `GET /sn_km_api/knowledge/articles[/<id>]` | Alias — dedicated KM API, shape is a guess, not observed in use |
+
+### Verifying article retrieval without PagerDuty
+Before blaming the connector, confirm the mock itself resolves the article. This runs the same round trip the SRE Agent does — token grant, PD's exact search query, then a direct fetch by KB number — and asserts the expected article is the top hit:
+
+```bash
+./scripts/verify-servicenow.sh                       # all scenarios, localhost:3005
+./scripts/verify-servicenow.sh service-mesh-mtls     # one scenario
+./scripts/verify-servicenow.sh all https://xxx.ngrok-free.dev
+./scripts/verify-servicenow.sh all https://servicenow.holodeck.scsandbox.net
+```
+
+Expected article numbers are read from the fixtures, so the script cannot drift out of sync with the data. It also reports how many articles came back — a long list is what previously caused the agent to reply "returned 7 articles but none matched", so anything above 2–3 is a signal that relevance pruning has regressed.
 
 ### Verifying against live traffic
 When debugging, always confirm what actually arrived rather than inferring from the agent's error message. Via ngrok:

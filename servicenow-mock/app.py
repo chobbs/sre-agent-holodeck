@@ -121,18 +121,16 @@ MAX_RESULTS = 3
 # and render the article. Extra JSON keys are harmless to any sane consumer.
 CORE_FETCH_FIELDS = ("sys_id", "number", "short_description", "content")
 
-# PagerDuty sends sysparm_display_value=true, which in real ServiceNow returns
-# each field's LABEL rather than its internal value. workflow_state is stored
-# lowercase ("published") but displays capitalised ("Published"), and a consumer
-# checking for the published label would reject the lowercase form.
-DISPLAY_VALUES = {
-    "workflow_state": {
-        "published": "Published",
-        "draft": "Draft",
-        "retired": "Retired",
-        "review": "Review",
-    },
-}
+# NOTE: display-value translation is deliberately NOT implemented right now.
+#
+# PagerDuty sends sysparm_display_value=true, and real ServiceNow would then
+# return each field's LABEL rather than its internal value — workflow_state
+# would come back "Published" rather than the stored "published". That was
+# implemented and then reverted so the fix above (always returning the article
+# body on a single-article fetch) could be tested in isolation. If the SRE
+# Agent now retrieves runbooks successfully, the body was the whole problem and
+# the casing is irrelevant. If it still fails, restore the mapping — see the
+# revert commit for the exact code.
 
 # Dropped when scoring: PagerDuty prefixes the search with "number=", and
 # generic words match everything so they carry no signal.
@@ -251,19 +249,6 @@ def project_fields(record: dict, sysparm_fields: str, always=()) -> dict:
     for f in always:
         if f not in out:
             out[f] = record.get(f, "")
-    return out
-
-
-def apply_display_values(record: dict) -> dict:
-    """Translate internal values to their display labels, as ServiceNow does
-    when sysparm_display_value=true (which PagerDuty always sends)."""
-    if request.args.get("sysparm_display_value", "").lower() not in ("true", "1", "all"):
-        return record
-    out = dict(record)
-    for field, mapping in DISPLAY_VALUES.items():
-        val = out.get(field)
-        if isinstance(val, str) and val in mapping:
-            out[field] = mapping[val]
     return out
 
 
@@ -403,9 +388,7 @@ def _table_search():
 
     results = search_articles(request.args.get("sysparm_query", ""), parse_limit())
     fields = request.args.get("sysparm_fields", "")
-    return jsonify({"result": [
-        apply_display_values(project_fields(kb_record(s), fields)) for s in results
-    ]})
+    return jsonify({"result": [project_fields(kb_record(s), fields) for s in results]})
 
 
 def _table_get_one(sys_id):
@@ -424,7 +407,7 @@ def _table_get_one(sys_id):
 
     fields = request.args.get("sysparm_fields", "")
     record = project_fields(kb_record(scenario), fields, always=CORE_FETCH_FIELDS)
-    return jsonify({"result": apply_display_values(record)})
+    return jsonify({"result": record})
 
 
 app.add_url_rule("/api/now/table/sn_km_mr_st_kb_knowledge",

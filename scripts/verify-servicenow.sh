@@ -209,19 +209,31 @@ except Exception:
   rbody=$(printf '%s' "$real" | sed '$d')
 
   if [ "$rcode" = "200" ]; then
-    empties=$(printf '%s' "$rbody" | python3 -c "
+    verdict=$(printf '%s' "$rbody" | python3 -c "
 import sys, json
 try:
     r = json.load(sys.stdin).get('result', {})
 except Exception:
-    print('unparseable'); raise SystemExit
+    print('ERR|unparseable'); raise SystemExit
 blank = [k for k, v in r.items() if v in ('', None, [])]
-print(','.join(blank) if blank else 'none')")
-    if [ "$empties" = "none" ]; then
-      echo "   pd-fetch: sys_id 200, all requested fields populated"
+if blank:
+    print('ERR|empty fields: ' + ','.join(blank)); raise SystemExit
+# The agent needs the article BODY from this call, not just metadata. Returning
+# only the requested metadata fields is what produced 'the automated fetch
+# failed' in the SRE Agent despite a clean 200.
+if not (r.get('content') or '').strip():
+    print('ERR|200 but no article content'); raise SystemExit
+if not r.get('number'):
+    print('ERR|200 but no article number'); raise SystemExit
+ws = r.get('workflow_state')
+if ws != 'Published':
+    print('ERR|workflow_state display value is %r, expected Published' % ws); raise SystemExit
+print('OK|content %d chars, %s, state=%s' % (len(r['content']), r['number'], ws))")
+    if [ "${verdict%%|*}" = "OK" ]; then
+      echo "   pd-fetch: sys_id 200 — ${verdict#*|}"
       PASS=$((PASS+1))
     else
-      echo "   pd-fetch: FAIL — empty fields: $empties"
+      echo "   pd-fetch: FAIL — ${verdict#*|}"
       FAIL=$((FAIL+1))
     fi
   else

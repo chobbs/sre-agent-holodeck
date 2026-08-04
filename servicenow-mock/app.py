@@ -110,6 +110,30 @@ DEFAULT_AUTHOR = "SRE Platform Team"
 # as relevance, so weak matches have to be pruned rather than merely ranked.
 MAX_RESULTS = 3
 
+# Fields always returned by a single-article fetch, even when the caller's
+# sysparm_fields does not ask for them.
+#
+# Real ServiceNow honors sysparm_fields strictly, and so did we — which meant
+# PagerDuty's fetch (sysparm_fields=kb_knowledge_base,workflow_state,
+# sys_updated_on,sys_updated_by) got metadata and no article body, and the SRE
+# Agent reported "the automated fetch failed" despite a clean HTTP 200. Being a
+# useful mock beats being a byte-exact one: always include enough to identify
+# and render the article. Extra JSON keys are harmless to any sane consumer.
+CORE_FETCH_FIELDS = ("sys_id", "number", "short_description", "content")
+
+# PagerDuty sends sysparm_display_value=true, which in real ServiceNow returns
+# each field's LABEL rather than its internal value. workflow_state is stored
+# lowercase ("published") but displays capitalised ("Published"), and a consumer
+# checking for the published label would reject the lowercase form.
+DISPLAY_VALUES = {
+    "workflow_state": {
+        "published": "Published",
+        "draft": "Draft",
+        "retired": "Retired",
+        "review": "Review",
+    },
+}
+
 # Dropped when scoring: PagerDuty prefixes the search with "number=", and
 # generic words match everything so they carry no signal.
 STOPWORDS = {
@@ -213,16 +237,34 @@ def kb_record(scenario: dict) -> dict:
     }
 
 
-def project_fields(record: dict, sysparm_fields: str) -> dict:
-    """Honor ?sysparm_fields=a,b,c — return exactly those keys. Unknown
-    requested fields come back empty rather than missing, which is what
-    ServiceNow does and stops the caller tripping over absent keys."""
+def project_fields(record: dict, sysparm_fields: str, always=()) -> dict:
+    """Honor ?sysparm_fields=a,b,c — return those keys, plus anything in
+    `always`. Unknown requested fields come back empty rather than missing,
+    which is what ServiceNow does and stops the caller tripping over absent
+    keys."""
     if not sysparm_fields:
         return record
     wanted = [f.strip() for f in sysparm_fields.split(",") if f.strip()]
     if not wanted:
         return record
-    return {f: record.get(f, "") for f in wanted}
+    out = {f: record.get(f, "") for f in wanted}
+    for f in always:
+        if f not in out:
+            out[f] = record.get(f, "")
+    return out
+
+
+def apply_display_values(record: dict) -> dict:
+    """Translate internal values to their display labels, as ServiceNow does
+    when sysparm_display_value=true (which PagerDuty always sends)."""
+    if request.args.get("sysparm_display_value", "").lower() not in ("true", "1", "all"):
+        return record
+    out = dict(record)
+    for field, mapping in DISPLAY_VALUES.items():
+        val = out.get(field)
+        if isinstance(val, str) and val in mapping:
+            out[field] = mapping[val]
+    return out
 
 
 def km_api_article(scenario: dict) -> dict:
@@ -361,7 +403,9 @@ def _table_search():
 
     results = search_articles(request.args.get("sysparm_query", ""), parse_limit())
     fields = request.args.get("sysparm_fields", "")
-    return jsonify({"result": [project_fields(kb_record(s), fields) for s in results]})
+    return jsonify({"result": [
+        apply_display_values(project_fields(kb_record(s), fields)) for s in results
+    ]})
 
 
 def _table_get_one(sys_id):
@@ -379,7 +423,8 @@ def _table_get_one(sys_id):
         }), 404
 
     fields = request.args.get("sysparm_fields", "")
-    return jsonify({"result": project_fields(kb_record(scenario), fields)})
+    record = project_fields(kb_record(scenario), fields, always=CORE_FETCH_FIELDS)
+    return jsonify({"result": apply_display_values(record)})
 
 
 app.add_url_rule("/api/now/table/sn_km_mr_st_kb_knowledge",

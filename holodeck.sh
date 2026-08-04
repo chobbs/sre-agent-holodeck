@@ -17,7 +17,7 @@ set -uo pipefail
 
 BASE_DIR="${BASE_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 
-SERVICES=(grafana arize splunk elasticsearch dynatrace)
+SERVICES=(grafana arize splunk elasticsearch)
 DOMAIN="${HOLODECK_DOMAIN:-holodeck.scsandbox.net}"
 
 # Use sudo only if docker isn't accessible directly
@@ -35,7 +35,6 @@ port_for() {
     arize)         echo 3001 ;;
     splunk)        echo 3002 ;;
     elasticsearch) echo 3003 ;;
-    dynatrace)     echo 3004 ;;
   esac
 }
 

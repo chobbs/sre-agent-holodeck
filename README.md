@@ -1,6 +1,6 @@
 # Holodeck — SRE Connector Simulator
 
-Mock API services for demoing PagerDuty's SRE Agent connectors without real observability infrastructure. All five mocks run simultaneously as independent HTTPS services on EC2, backed by scenario fixtures stored in S3.
+Mock API services for demoing PagerDuty's SRE Agent connectors without real observability infrastructure. All four mocks run simultaneously as independent HTTPS services on EC2, backed by scenario fixtures stored in S3.
 
 ## Live endpoints
 
@@ -10,13 +10,10 @@ Mock API services for demoing PagerDuty's SRE Agent connectors without real obse
 | Arize | `https://arize.holodeck.scsandbox.net` | Arize |
 | Splunk | `https://splunk.holodeck.scsandbox.net` | Splunk |
 | Elasticsearch | `https://elasticsearch.holodeck.scsandbox.net` | Elasticsearch |
-| Dynatrace | `https://dynatrace.holodeck.scsandbox.net:9999` (also `443`) | Dynatrace ¹ |
 
-**Auth token for Grafana, Arize, Splunk, Elasticsearch:** `demo-token`
+**Auth token for all services:** `demo-token`
 
-**Dynatrace auth:** OAuth2 client credentials — Client ID `demo-client`, Client Secret `demo-secret`
-
-¹ Served on **both** `443` and `9999` with a valid Let's Encrypt cert; both ports are open to `0.0.0.0/0`. Use `:9999` — it is the URL shape PagerDuty's Dynatrace connector expects. Note that PagerDuty-managed laptops cannot reach any of these hostnames directly (Cloudflare WARP). See [Dynatrace — known limitations](#dynatrace--known-limitations).
+> Note: PagerDuty-managed laptops cannot reach these hostnames directly — corporate Cloudflare WARP blocks the domain at the device level and returns a `303` to `blocked.teams.cloudflare.com`. This affects your laptop only, not PagerDuty's cloud. To test locally, pin the IP: `curl --resolve grafana.holodeck.scsandbox.net:443:35.88.248.161 ...`, or run the request from the EC2 box.
 
 ## Architecture
 
@@ -25,16 +22,15 @@ Mock API services for demoing PagerDuty's SRE Agent connectors without real obse
                                        ↓
                             EC2 / Amazon Linux 2023
                                        ↓
-                     Caddy (ports 443 + 9999, auto-TLS)
-              ┌────────────┬───────────┬──────────────┬──────────────┐
-           grafana       arize       splunk    elasticsearch    dynatrace
-            :3000         :3001       :3002        :3003          :3004
+                            Caddy (port 443, auto-TLS)
+              ┌────────────┬───────────┬──────────────────┐
+           grafana       arize       splunk        elasticsearch
+            :3000         :3001       :3002             :3003
                                        ↑
                           S3: sc-holodeck-demo
 ```
 
 - **Caddy** handles TLS (Let's Encrypt, auto-renewing via TLS-ALPN-01 — port 80 not required)
-- **Dynatrace** is served on port `9999` instead of `443`, because PagerDuty's connector expects the Dynatrace Managed/ActiveGate URL shape `{domain}:9999/e/{env-id}`
 - **Fixtures** are JSON files stored in S3, hot-reloadable without container restarts
 - **Docker Compose** manages all containers with `restart: unless-stopped` (survives reboots)
 
@@ -48,11 +44,6 @@ In PagerDuty → Integrations → connector setup, use:
 | Arize | `https://arize.holodeck.scsandbox.net` | API Key | `demo-token` |
 | Splunk | `https://splunk.holodeck.scsandbox.net` | Authentication Token | `demo-token` |
 | Elasticsearch | `https://elasticsearch.holodeck.scsandbox.net` | API Key | `demo-token` |
-| Dynatrace | `https://dynatrace.holodeck.scsandbox.net:9999/e/demo-env` | Client ID + Client Secret | `demo-client` / `demo-secret` |
-
-For Dynatrace set **Environment Type: Managed** and use the `:9999/e/{env-id}` form above — that is the Managed/ActiveGate shape PagerDuty expects, and it is the only variant that can reach the mock at all (Dynatrace **SaaS** always authenticates against `sso.dynatrace.com`, so PD would ignore your Environment URL for the token call).
-
-The same mock is also served on plain `443`, so `https://dynatrace.holodeck.scsandbox.net/e/demo-env` works as a fallback if the form rejects the port. Both are verified end-to-end: token exchange → DQL query → `SUCCEEDED` with scenario records, valid Let's Encrypt cert on both ports.
 
 ## Managing the stack (on EC2)
 
@@ -115,7 +106,6 @@ s3://sc-holodeck-demo/
   arize/scenarios.json
   splunk/scenarios.json
   elasticsearch/scenarios.json
-  dynatrace/scenarios.json
 ```
 
 ## Scenario matching
@@ -124,14 +114,14 @@ Each service matches incoming requests against scenario keys using substring mat
 
 **Available scenarios per service:**
 
-| Grafana (logs) | Grafana (metrics) | Arize | Splunk | Elasticsearch | Dynatrace |
-|---|---|---|---|---|---|
-| checkout-api | checkout-api | checkout-agent | suspicious-login | payments-api-gateway | payments-api-gateway |
-| payments-svc | payments-svc | fraud-detection-model | privilege-escalation | payments-orchestrator-sync | payments-orchestrator-sync |
-| orders-db-proxy | orders-db-proxy | rag-retrieval-agent | data-exfiltration | idempotency-token-service | idempotency-token-service |
-| auth-service | auth-service | hallucination | malware-detection | payments-rules-engine | service-mesh-mtls |
-| search-api | search-api | support-chatbot | firewall-policy-violation | service-mesh-mtls | edge-waf-cdn |
-| *(default)* | *(default)* | *(default)* | *(default)* | *(default)* | *(default)* |
+| Grafana (logs) | Grafana (metrics) | Arize | Splunk | Elasticsearch |
+|---|---|---|---|---|
+| checkout-api | checkout-api | checkout-agent | suspicious-login | payments-api-gateway |
+| payments-svc | payments-svc | fraud-detection-model | privilege-escalation | payments-orchestrator-sync |
+| orders-db-proxy | orders-db-proxy | rag-retrieval-agent | data-exfiltration | idempotency-token-service |
+| auth-service | auth-service | hallucination | malware-detection | payments-rules-engine |
+| search-api | search-api | support-chatbot | firewall-policy-violation | service-mesh-mtls |
+| *(default)* | *(default)* | *(default)* | *(default)* | *(default)* |
 
 ## Project structure
 
@@ -139,7 +129,7 @@ Each service matches incoming requests against scenario keys using substring mat
 sre-conn-simulator/
 ├── holodeck.sh              # EC2 stack manager (docker compose wrapper)
 ├── holodeck-local.sh        # Local dev runner (Flask + ngrok, one service at a time)
-├── docker-compose.yml       # All 5 mocks + Caddy
+├── docker-compose.yml       # All 4 mocks + Caddy
 ├── Caddyfile                # HTTPS reverse proxy config
 ├── requirements.txt         # Shared Python deps (Flask, boto3)
 ├── .env.example             # Environment variable template
@@ -161,65 +151,10 @@ sre-conn-simulator/
 │   ├── app.py               # Elasticsearch API mock (Lucene/KQL/EQL search)
 │   ├── Dockerfile
 │   └── fixtures/scenarios.json
-├── dynatrace-mock/
-│   ├── app.py               # Dynatrace Grail API mock (OAuth2 + DQL)
-│   ├── Dockerfile
-│   └── fixtures/scenarios.json
 └── scripts/
     ├── bootstrap-ec2.sh     # Fresh instance setup (Docker + Buildx + Compose)
     └── sync-fixtures-to-s3.sh  # Upload all fixture JSON to S3
 ```
-
-## Dynatrace — known limitations
-
-The Dynatrace mock **is deployed** as part of the EC2 stack. The container is healthy, Caddy serves it on ports `443` and `9999`, and it holds a valid Let's Encrypt certificate for `dynatrace.holodeck.scsandbox.net`. It implements the OAuth2 client-credentials token exchange, DQL query execution, and the async poll flow.
-
-The DNS zone is **not** proxied — `*.holodeck.scsandbox.net` resolves straight to `35.88.248.161`. Three independent things affect reachability and PagerDuty integration:
-
-**1. Cloudflare WARP blocks the domain on PagerDuty-managed machines.** Requests from a corporate laptop return `303 See Other` to `blocked.teams.cloudflare.com` ("blocked by PagerDuty IT"). This is a device-level Zero Trust DNS/HTTP filter and it affects **all five services**, not just Dynatrace — the other four appear to work only because PagerDuty's cloud reaches them directly, not through WARP.
-
-To test from a corporate laptop, pin the IP so WARP's DNS interception is bypassed:
-```bash
-curl -s --resolve dynatrace.holodeck.scsandbox.net:443:35.88.248.161 \
-  -X POST https://dynatrace.holodeck.scsandbox.net/e/demo-env/sso/oauth2/token \
-  -d grant_type=client_credentials \
-  -d client_id=demo-client \
-  -d client_secret=demo-secret | jq .
-```
-
-**2. Inbound 9999 — RESOLVED.** This port was originally missing from the `Solution-Consulting-BVA` security group, so the canonical Managed URL was unreachable from the internet even though Caddy was serving it correctly. A `tcp/9999` rule for `0.0.0.0/0` has since been added and verified. The mock is additionally served on `443` as a fallback.
-
-If `:9999` ever stops responding, check the security group first — the service listening is not the same as the port being reachable:
-```bash
-# on the instance: is Caddy listening, and is the port reachable from outside?
-cat < /dev/null > /dev/tcp/127.0.0.1/9999      && echo listening
-cat < /dev/null > /dev/tcp/35.88.248.161/9999  && echo reachable
-aws ec2 describe-security-groups --region us-west-2 \
-  --filters Name=group-name,Values=Solution-Consulting-BVA \
-  --query "SecurityGroups[].IpPermissions[].[IpProtocol,FromPort,IpRanges[].CidrIp]" --output text
-```
-
-**3. Does PagerDuty hardcode the OAuth2 token endpoint? — UNCONFIRMED, now testable.** Earlier testing suggested the connector always calls `sso.dynatrace.com` regardless of the Environment URL. That conclusion was never actually evidenced: the mock's log has only ever contained healthcheck traffic from `127.0.0.1`, and until the `9999` rule was added a token request would have been dropped by the security group — indistinguishable from one that was never sent.
-
-With networking now verified end-to-end, this is a clean test. Watch the mock while saving the connector:
-```bash
-docker logs -f --since 1m holodeck-dynatrace
-```
-- `POST /e/demo-env/sso/oauth2/token ... 200` → PD honors the Environment URL; the mock works and the earlier dead-end was a networking artifact.
-- Only `127.0.0.1 ... GET / 200` (healthcheck, every 30s) → nothing arrived; PD really does go to `sso.dynatrace.com`. Confirmed dead end.
-- `401 invalid_client` → PD reached the mock but credentials mismatch (check for stray whitespace).
-
-Note that **Environment Type matters**: pick Managed, not SaaS. Real Dynatrace SaaS always uses `sso.dynatrace.com`, so testing with SaaS selected would reproduce the original dead end by design.
-
-To verify the mock itself independent of all networking, run it from the instance:
-```bash
-docker exec holodeck-dynatrace curl -s -X POST http://localhost:3004/sso/oauth2/token \
-  -d grant_type=client_credentials -d client_id=demo-client -d client_secret=demo-secret | jq .
-```
-
-Set `SIMULATE_ASYNC=true` in `.env` to force the polling path (query returns `202 RUNNING`, then succeeds on the next poll).
-
-The service is kept in the stack so the API surface stays exercised and deployable — useful for verifying DQL query shape and for the day PagerDuty makes the token endpoint configurable.
 
 ## Admin endpoint
 
@@ -248,7 +183,7 @@ Requires: Python 3, `pip install -r requirements.txt`, ngrok configured with you
 | Elastic IP | `35.88.248.161` |
 | Region | `us-west-2` |
 | OS | Amazon Linux 2023 |
-| Security group | `Solution-Consulting-BVA` — `sg-075c3b95bf9657a5f` (inbound: 443 + 9999 from 0.0.0.0/0, 22 and 4000 from specific /32s) |
+| Security group | `Solution-Consulting-BVA` — `sg-075c3b95bf9657a5f` (inbound: 443 from 0.0.0.0/0, 22 and 4000 from specific /32s) |
 | DNS | `*.holodeck.scsandbox.net` → `35.88.248.161` (not proxied). Corporate Cloudflare WARP blocks the domain on managed laptops |
 | S3 bucket | `sc-holodeck-demo` (fixtures) |
 | Project path | `~/holodeck/` |

@@ -10,8 +10,16 @@
 #      -> asserts the expected KB article is the TOP hit
 #      -> reports how many articles came back (should be few; a long list is
 #         what made the agent say "returned 7 articles but none matched")
-#   3. GET  /api/now/table/sn_km_mr_st_kb_knowledge/<KB>  (direct fetch)
+#   3. GET  /api/now/table/sn_km_mr_st_kb_knowledge/<KB>  (fetch by number)
 #      -> asserts 200 and non-empty content
+#   4. GET  /api/now/table/kb_knowledge/<sys_id>          (PD's REAL fetch shape,
+#                                                          different field set)
+#      -> asserts the fields PD asks for come back populated
+#
+# It also lints the fixtures for raw angle brackets. ServiceNow KB content is
+# HTML and PagerDuty parses it as such, so a literal `<pod>` placeholder reads
+# as an unknown tag and the article fetch fails in the SRE Agent even though we
+# return a clean 200. Write `&lt;pod&gt;` instead.
 #
 # Expected article numbers are read from the fixtures, so this cannot drift out
 # of sync with the data.
@@ -41,13 +49,36 @@ CLIENT_SECRET="${MOCK_CLIENT_SECRET:-demo-secret}"
 SNOW_USER="${MOCK_USERNAME:-demo-user}"
 SNOW_PASS="${MOCK_PASSWORD:-demo-pass}"
 
-# PagerDuty's real field list, verbatim from captured traffic.
+# PagerDuty's real field lists, verbatim from captured traffic. It uses a
+# DIFFERENT set for search vs single-article fetch.
 PD_FIELDS="number,short_description,content,sys_updated_on,author,embedded_media,sys_id"
+PD_FETCH_FIELDS="kb_knowledge_base,workflow_state,sys_updated_on,sys_updated_by"
 
 echo "Target: $BASE"
 echo ""
 
-# ── 1. token ──────────────────────────────────────────────────────────────────
+# ── 0. lint fixture content for raw angle brackets ───────────────────────────
+echo "Fixture HTML safety"
+LINT=$(python3 - "$FIXTURES" <<'PY'
+import json, re, sys
+bad = []
+for key, art in json.load(open(sys.argv[1])).items():
+    hits = re.findall(r"<[^>]{1,24}>", art.get("text", ""))
+    if hits:
+        bad.append("%s: %s" % (key, ", ".join(sorted(set(hits)))))
+print("\n".join(bad))
+PY
+)
+if [ -n "$LINT" ]; then
+  echo "  FAIL — raw angle brackets found (PagerDuty parses content as HTML):"
+  printf '%s\n' "$LINT" | sed 's/^/    /'
+  echo "  Escape them as &lt; and &gt; in the fixture."
+  exit 1
+fi
+echo "  ok — no raw angle brackets in article content"
+echo ""
+
+# ── 1. token ─────────────────────────────────────────────────────────────────
 echo "OAuth password grant"
 TOKEN=$(curl -s -m 20 -X POST "$BASE/oauth_token.do" \
   -d grant_type=password -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET" \
@@ -81,7 +112,7 @@ for key, art in data.items():
     # meaningful words from the article title.
     title = re.sub(r"^Runbook:\s*", "", art.get("short_description", ""))
     words = [w for w in re.split(r"[^A-Za-z0-9]+", title) if len(w) > 3][:5]
-    print("%s\t%s\t%s" % (key, art["number"], " ".join([key] + words)))
+    print("%s\t%s\t%s\t%s" % (key, art["number"], art["sys_id"], " ".join([key] + words)))
 PY
 )
 
@@ -99,7 +130,7 @@ fi
 PASS=0
 FAIL=0
 
-while IFS=$'\t' read -r key kb terms; do
+while IFS=$'\t' read -r key kb sysid terms; do
   [ -z "$key" ] && continue
   echo "── $key (expect $kb)"
 
@@ -165,6 +196,36 @@ except Exception:
     fi
   else
     echo "   fetch:  FAIL — HTTP $code for $kb"
+    FAIL=$((FAIL+1))
+  fi
+
+  # PagerDuty's actual single-article fetch: generic kb_knowledge table, by
+  # sys_id, with a DIFFERENT field set. This is the call that silently returned
+  # empty fields before kb_knowledge_base / sys_updated_by were populated.
+  real=$(curl -s -m 20 -H "Authorization: Bearer $TOKEN" \
+    "$BASE/api/now/table/kb_knowledge/${sysid}?sysparm_fields=${PD_FETCH_FIELDS}&sysparm_display_value=true" \
+    -w '\n%{http_code}')
+  rcode=$(printf '%s' "$real" | tail -1)
+  rbody=$(printf '%s' "$real" | sed '$d')
+
+  if [ "$rcode" = "200" ]; then
+    empties=$(printf '%s' "$rbody" | python3 -c "
+import sys, json
+try:
+    r = json.load(sys.stdin).get('result', {})
+except Exception:
+    print('unparseable'); raise SystemExit
+blank = [k for k, v in r.items() if v in ('', None, [])]
+print(','.join(blank) if blank else 'none')")
+    if [ "$empties" = "none" ]; then
+      echo "   pd-fetch: sys_id 200, all requested fields populated"
+      PASS=$((PASS+1))
+    else
+      echo "   pd-fetch: FAIL — empty fields: $empties"
+      FAIL=$((FAIL+1))
+    fi
+  else
+    echo "   pd-fetch: FAIL — HTTP $rcode for sys_id $sysid"
     FAIL=$((FAIL+1))
   fi
   echo ""

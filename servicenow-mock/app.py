@@ -54,6 +54,14 @@ is honored so the response contains exactly the requested keys.
 Search never returns an empty list. An empty result reads to the SRE Agent as
 "no runbook exists", which is worse for a demo than the general handbook.
 
+*** KEEP ANGLE BRACKETS ESCAPED IN FIXTURE CONTENT ***
+Real ServiceNow KB `content` is HTML, and PagerDuty parses it as such. A
+runbook containing a literal placeholder like `<pod>` is read as an unknown
+HTML tag: the article fetch failed in the SRE Agent ("fetch failed") for the
+ONLY article that had raw angle brackets, while every other article worked and
+our own logs showed a clean 200 for it. Write `&lt;pod&gt;` in fixtures
+instead. `scripts/verify-servicenow.sh` lints for this.
+
 Endpoints:
   POST /oauth_token.do                                 OAuth2 password grant
   GET  /api/now/table/sn_km_mr_st_kb_knowledge[/<id>]  CONFIRMED — PD searches here
@@ -174,10 +182,18 @@ def check_bearer():
 # ── Article shaping ───────────────────────────────────────────────────────────
 
 def kb_record(scenario: dict) -> dict:
-    """Full record. PagerDuty asks for content/author/sys_updated_on/
-    embedded_media, so those are first-class; `text` is kept as well for the
-    generic kb_knowledge alias."""
+    """Full record.
+
+    PagerDuty requests two different field sets depending on the call:
+      search    number, short_description, content, sys_updated_on, author,
+                embedded_media, sys_id
+      fetch one kb_knowledge_base, workflow_state, sys_updated_on,
+                sys_updated_by
+    Everything either set asks for is populated here. `text` is kept alongside
+    `content` for the generic kb_knowledge alias.
+    """
     body = scenario.get("text", "")
+    author = scenario.get("author", DEFAULT_AUTHOR)
     return {
         "sys_id": scenario["sys_id"],
         "number": scenario["number"],
@@ -185,8 +201,10 @@ def kb_record(scenario: dict) -> dict:
         "content": body,
         "text": body,
         "kb_category": scenario.get("kb_category", "General"),
+        "kb_knowledge_base": scenario.get("kb_knowledge_base", "SRE Runbooks"),
         "workflow_state": scenario.get("workflow_state", "published"),
-        "author": scenario.get("author", DEFAULT_AUTHOR),
+        "author": author,
+        "sys_updated_by": scenario.get("sys_updated_by", author),
         "sys_updated_on": scenario.get(
             "sys_updated_on",
             time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 86400)),

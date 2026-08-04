@@ -8,6 +8,16 @@
     "kb_category": "General",
     "workflow_state": "published"
   },
+  "checkout-api": {
+    "description": "Runbook for Checkout API heap exhaustion / OOM incidents",
+    "sys_id": "a7b8c9d0e1f2a3b4c5d6e7f8a9b0c107",
+    "number": "KB0010012",
+    "short_description": "Runbook: Checkout API Heap Exhaustion and OOM Recovery",
+    "text": "Symptoms: checkout-api heap usage climbing past 85%, GC pause times increasing, intermittent 503s at the checkout step, eventual OutOfMemoryError and pod restart. Steps: 1) Confirm the trend on the checkout-api heap dashboard rather than reacting to a single scrape. 2) Check whether a deploy landed in the last 60 minutes: `kubectl rollout history deployment/checkout-api -n prod`. 3) If heap is still climbing and no restart has happened, do a controlled rolling restart to avoid an uncontrolled OOM kill during checkout traffic: `kubectl rollout restart deployment/checkout-api -n prod`. 4) Watch heap for 15 minutes; it should settle below 60%. 5) If it climbs again quickly, this is an active leak rather than a traffic spike - capture a heap dump before the next restart (`jcmd 1 GC.heap_dump /tmp/checkout.hprof`) and escalate to the Checkout team with it attached. 6) Because checkout-api is revenue-critical, prefer scaling out over repeated restarts while root cause is still unknown.",
+    "kb_category": "Payments Platform",
+    "author": "Checkout Platform Team",
+    "workflow_state": "published"
+  },
   "payments-api-gateway": {
     "description": "Runbook for Payments API Gateway heap/OOM incidents",
     "sys_id": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d402",

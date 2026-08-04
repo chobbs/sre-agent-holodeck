@@ -6,50 +6,50 @@ This codebase has no knowledge of Grafana, Arize, Splunk, or Elasticsearch
 service so PagerDuty's ServiceNow OAuth connector always talks to a host
 that only ever answers ServiceNow-shaped requests.
 
-*** WHY THIS MAY SUCCEED WHERE DYNATRACE FAILED ***
-ServiceNow's OAuth token endpoint is ALWAYS per-instance:
-    https://<instance>.service-now.com/oauth_token.do
-There is no shared global ServiceNow host the way sso.dynatrace.com is
-shared across every Dynatrace tenant. Since the connector's URL field is
-genuine free text and PagerDuty has no other way to know which ServiceNow
-instance to authenticate against, the token endpoint is very likely derived
-from that same URL field.
+*** CONFIRMED WORKING WITH PAGERDUTY ***
+Unlike the Dynatrace attempt, PagerDuty genuinely calls this mock. Observed
+live (2026-08-04) with `User-Agent: PagerDuty-Workflow-Automation`:
 
-That is a STRUCTURAL reason for optimism, not a guarantee. It remains
-UNVERIFIED until live traffic proves it. The Dynatrace attempt failed
-precisely because PagerDuty never sent the token request to our host at
-all — so verify that first, before trusting anything downstream:
+  POST /oauth_token.do                              (from 44.242.69.192)
+  GET  /api/now/table/sn_km_mr_st_kb_knowledge?...  (from 54.213.187.133)
 
-    # watch for an inbound POST /oauth_token.do while saving the connector
-    docker logs -f --since 1m holodeck-servicenow
+ServiceNow's OAuth token endpoint is always per-instance, so there is no
+shared global host for PagerDuty to shortcut to, the way sso.dynatrace.com is
+shared across every Dynatrace tenant. That is why this one works.
 
-If no request arrives, this joins Dynatrace as a confirmed dead end and
-nothing downstream matters.
+*** THE KNOWLEDGE TABLE IS NOT kb_knowledge ***
+PagerDuty queries the Knowledge Management search table:
+
+  GET /api/now/table/sn_km_mr_st_kb_knowledge
+        ?sysparm_fields=number,short_description,content,sys_updated_on,
+                        author,embedded_media,sys_id
+        &sysparm_display_value=true
+        &sysparm_limit=10
+        &sysparm_query=number=<free text search terms>
+
+Two things learned the hard way from a 404 in the SRE Agent:
+  1. The table is `sn_km_mr_st_kb_knowledge`. Neither the generic
+     `kb_knowledge` table nor the dedicated `/sn_km_api/knowledge/articles`
+     endpoint is what gets called. Both are still served here as aliases in
+     case other PagerDuty code paths use them.
+  2. PagerDuty packs free-text search terms into `sysparm_query=number=...`,
+     which is not a real equality match on the number field. So matching
+     scores how many query terms appear in each article rather than comparing
+     fields. An explicit `KB…` number in the query still wins outright.
+
+Field names matter: PagerDuty asks for `content` (not `text`), plus `author`,
+`sys_updated_on` and `embedded_media`. All are returned, and `sysparm_fields`
+is honored so the response contains exactly the requested keys.
+
+Search never returns an empty list. An empty result reads to the SRE Agent as
+"no runbook exists", which is worse for a demo than the general handbook.
 
 Endpoints:
-  POST /oauth_token.do                     - OAuth2 PASSWORD grant.
-                                             CONFIRMED shape from
-                                             ServiceNow's public docs.
-                                             Note: password grant, NOT
-                                             client_credentials like
-                                             Dynatrace used.
-  GET  /api/now/table/kb_knowledge         - CONFIRMED Table API shape.
-                                             Generic table search, real and
-                                             well documented.
-  GET  /api/now/table/kb_knowledge/<id>    - CONFIRMED. One article by sys_id.
-  GET  /sn_km_api/knowledge/articles       - BEST GUESS shape. This is
-                                             ServiceNow's real dedicated
-                                             Knowledge Management API
-                                             (confirmed to exist), but its
-                                             exact response JSON was not
-                                             confirmed from available docs.
-  GET  /sn_km_api/knowledge/articles/<id>  - BEST GUESS. One article by id.
-  POST /admin/reload                       - Hot-reload fixtures from S3.
-
-BOTH Knowledge endpoint families are implemented because it is unconfirmed
-which one PagerDuty's "Knowledge" tool actually calls — the same category of
-ambiguity as Arize's /v2/spaces vs /v2/projects earlier in this project.
-Whichever one shows up in the logs is the real one; the other can be dropped.
+  POST /oauth_token.do                                  OAuth2 password grant
+  GET  /api/now/table/sn_km_mr_st_kb_knowledge[/<id>]   CONFIRMED: what PD calls
+  GET  /api/now/table/kb_knowledge[/<id>]               alias, generic table
+  GET  /sn_km_api/knowledge/articles[/<id>]             alias, dedicated KM API
+  POST /admin/reload                                    hot-reload from S3
 
 Auth for the Knowledge endpoints: `Authorization: Bearer <token>`. This mock
 does not validate the token cryptographically, it only checks that some
@@ -68,6 +68,8 @@ PagerDuty "Add ServiceNow OAuth Connector":
 
 import json
 import os
+import re
+import time
 import uuid
 from pathlib import Path
 
@@ -79,6 +81,16 @@ USERNAME = os.environ.get("MOCK_USERNAME", "demo-user")
 PASSWORD = os.environ.get("MOCK_PASSWORD", "demo-pass")
 PORT = int(os.environ.get("PORT", "3005"))
 FIXTURES_PATH = Path(__file__).parent / "fixtures" / "scenarios.json"
+
+DEFAULT_AUTHOR = "SRE Platform Team"
+
+# Dropped when scoring: PagerDuty prefixes the search with "number=", and
+# generic words match everything so they carry no signal.
+STOPWORDS = {
+    "number", "the", "and", "for", "with", "from", "that", "this", "any",
+    "are", "was", "not", "but", "how", "what", "why", "does", "did", "has",
+    "have", "you", "your", "please", "find", "search", "article",
+}
 
 
 def load_fixtures(local_path: Path, s3_key_env: str = "FIXTURES_S3_KEY") -> dict:
@@ -101,14 +113,23 @@ def load_fixtures(local_path: Path, s3_key_env: str = "FIXTURES_S3_KEY") -> dict
 
 
 def index_by_sys_id(scenarios: dict) -> dict:
-    """sys_id -> scenario, for the fetch-one-article endpoints."""
-    return {v["sys_id"]: v for v in scenarios.values() if isinstance(v, dict) and "sys_id" in v}
+    return {v["sys_id"]: v for v in scenarios.values()
+            if isinstance(v, dict) and "sys_id" in v}
+
+
+def index_by_number(scenarios: dict) -> dict:
+    return {v["number"].upper(): v for v in scenarios.values()
+            if isinstance(v, dict) and "number" in v}
 
 
 app = Flask(__name__)
+# Real ServiceNow returns fields in the order requested via sysparm_fields.
+# Flask alphabetizes by default, so turn that off to mirror the request.
+app.json.sort_keys = False
 
 SCENARIOS = load_fixtures(FIXTURES_PATH)
 ARTICLES_BY_SYS_ID = index_by_sys_id(SCENARIOS)
+ARTICLES_BY_NUMBER = index_by_number(SCENARIOS)
 
 
 def check_bearer():
@@ -123,45 +144,125 @@ def check_bearer():
     return None
 
 
-def pick_scenario(text: str):
-    """Substring-match the request against scenario keys, same convention as
-    the other mocks: the SRE Agent embeds incident custom_details (service
-    name, host) into its queries, so the service name lands in the query."""
-    q = (text or "").lower()
-    for key, scenario in SCENARIOS.items():
-        if key == "default":
-            continue
-        candidates = [key, scenario.get("short_description", "")]
-        if any(c and c.lower() in q for c in candidates):
-            return key, scenario
-    return "default", SCENARIOS["default"]
+# ── Article shaping ───────────────────────────────────────────────────────────
 
-
-def table_api_record(scenario: dict) -> dict:
-    """One record shaped like the real /api/now/table/kb_knowledge response."""
+def kb_record(scenario: dict) -> dict:
+    """Full record. PagerDuty asks for content/author/sys_updated_on/
+    embedded_media, so those are first-class; `text` is kept as well for the
+    generic kb_knowledge alias."""
+    body = scenario.get("text", "")
     return {
         "sys_id": scenario["sys_id"],
         "number": scenario["number"],
         "short_description": scenario["short_description"],
-        "text": scenario["text"],
-        "kb_category": scenario["kb_category"],
-        "workflow_state": scenario["workflow_state"],
+        "content": body,
+        "text": body,
+        "kb_category": scenario.get("kb_category", "General"),
+        "workflow_state": scenario.get("workflow_state", "published"),
+        "author": scenario.get("author", DEFAULT_AUTHOR),
+        "sys_updated_on": scenario.get(
+            "sys_updated_on",
+            time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 86400)),
+        ),
+        "embedded_media": scenario.get("embedded_media", []),
     }
 
 
+def project_fields(record: dict, sysparm_fields: str) -> dict:
+    """Honor ?sysparm_fields=a,b,c — return exactly those keys. Unknown
+    requested fields come back empty rather than missing, which is what
+    ServiceNow does and stops the caller tripping over absent keys."""
+    if not sysparm_fields:
+        return record
+    wanted = [f.strip() for f in sysparm_fields.split(",") if f.strip()]
+    if not wanted:
+        return record
+    return {f: record.get(f, "") for f in wanted}
+
+
 def km_api_article(scenario: dict) -> dict:
-    """Best-guess shape for the dedicated sn_km_api/knowledge/articles endpoint."""
+    """Shape for the dedicated sn_km_api alias. Still a best guess —
+    PagerDuty has not been observed calling this endpoint."""
+    body = scenario.get("text", "")
     return {
         "id": scenario["sys_id"],
         "number": scenario["number"],
         "title": scenario["short_description"],
-        "snippet": scenario["text"][:200],
-        "content": scenario["text"],
+        "snippet": body[:200],
+        "content": body,
         "fields": {
-            "category": {"display_value": scenario["kb_category"]},
-            "workflow_state": {"display_value": scenario["workflow_state"]},
+            "category": {"display_value": scenario.get("kb_category", "General")},
+            "workflow_state": {"display_value": scenario.get("workflow_state", "published")},
         },
     }
+
+
+# ── Search ────────────────────────────────────────────────────────────────────
+
+def tokenize(text: str):
+    return [t for t in re.split(r"[^a-z0-9]+", (text or "").lower())
+            if len(t) > 2 and t not in STOPWORDS]
+
+
+def score_scenario(key: str, scenario: dict, tokens) -> int:
+    """Weighted term overlap: the scenario key and title are stronger signals
+    than the article body."""
+    key_blob = key.lower()
+    title_blob = scenario.get("short_description", "").lower()
+    body_blob = scenario.get("text", "").lower()
+    score = 0
+    for t in tokens:
+        if t in key_blob:
+            score += 3
+        elif t in title_blob:
+            score += 2
+        elif t in body_blob:
+            score += 1
+    return score
+
+
+def search_articles(raw_query: str, limit: int = 10):
+    """Rank articles for a PagerDuty-style query.
+
+    PagerDuty sends `sysparm_query=number=<free text>`, so strip any leading
+    `field=` operator and treat the remainder as search terms.
+    """
+    q = raw_query or ""
+    q = re.sub(r"^\s*[a-z_]+(=|!=|LIKE|STARTSWITH|CONTAINS)", " ", q, flags=re.IGNORECASE)
+
+    # An explicit KB number wins outright.
+    for m in re.findall(r"KB\d+", q, flags=re.IGNORECASE):
+        hit = ARTICLES_BY_NUMBER.get(m.upper())
+        if hit:
+            return [hit]
+
+    tokens = tokenize(q)
+    scored = []
+    for key, scenario in SCENARIOS.items():
+        if not isinstance(scenario, dict):
+            continue
+        scored.append((score_scenario(key, scenario, tokens), key, scenario))
+
+    matched = sorted([s for s in scored if s[0] > 0], key=lambda s: -s[0])
+    if matched:
+        ordered = [s[2] for s in matched]
+    else:
+        # Nothing matched: lead with the default handbook, then everything
+        # else, so the agent gets usable guidance instead of an empty result.
+        ordered = ([SCENARIOS["default"]] if "default" in SCENARIOS else [])
+        ordered += [s[2] for s in scored if s[1] != "default"]
+
+    return ordered[: max(limit, 1)]
+
+
+def parse_limit(default: int = 10) -> int:
+    raw = request.args.get("sysparm_limit")
+    if not raw:
+        return default
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        return default
 
 
 # ── OAuth ─────────────────────────────────────────────────────────────────────
@@ -200,35 +301,26 @@ def oauth_token():
     })
 
 
-# ── Knowledge: Table API (confirmed shape) ────────────────────────────────────
+# ── Knowledge: Table API ──────────────────────────────────────────────────────
+# sn_km_mr_st_kb_knowledge is the table PagerDuty actually queries (confirmed
+# from live traffic). kb_knowledge is served identically as an alias.
 
-@app.route("/api/now/table/kb_knowledge", methods=["GET"])
-def table_api_search():
+def _table_search():
     err = check_bearer()
     if err:
         return err
 
-    query_text = request.args.get("sysparm_query", "")
-    limit = request.args.get("sysparm_limit")
-
-    _, scenario = pick_scenario(query_text)
-    records = [table_api_record(scenario)]
-    if limit:
-        try:
-            records = records[: int(limit)]
-        except ValueError:
-            pass
-
-    return jsonify({"result": records})
+    results = search_articles(request.args.get("sysparm_query", ""), parse_limit())
+    fields = request.args.get("sysparm_fields", "")
+    return jsonify({"result": [project_fields(kb_record(s), fields) for s in results]})
 
 
-@app.route("/api/now/table/kb_knowledge/<sys_id>", methods=["GET"])
-def table_api_get_one(sys_id):
+def _table_get_one(sys_id):
     err = check_bearer()
     if err:
         return err
 
-    scenario = ARTICLES_BY_SYS_ID.get(sys_id)
+    scenario = ARTICLES_BY_SYS_ID.get(sys_id) or ARTICLES_BY_NUMBER.get((sys_id or "").upper())
     if scenario is None:
         return jsonify({
             "error": {
@@ -237,10 +329,21 @@ def table_api_get_one(sys_id):
             }
         }), 404
 
-    return jsonify({"result": table_api_record(scenario)})
+    fields = request.args.get("sysparm_fields", "")
+    return jsonify({"result": project_fields(kb_record(scenario), fields)})
 
 
-# ── Knowledge: dedicated KM API (best-guess shape) ────────────────────────────
+app.add_url_rule("/api/now/table/sn_km_mr_st_kb_knowledge",
+                 "snkm_search", _table_search, methods=["GET"])
+app.add_url_rule("/api/now/table/sn_km_mr_st_kb_knowledge/<sys_id>",
+                 "snkm_get_one", _table_get_one, methods=["GET"])
+app.add_url_rule("/api/now/table/kb_knowledge",
+                 "kb_search", _table_search, methods=["GET"])
+app.add_url_rule("/api/now/table/kb_knowledge/<sys_id>",
+                 "kb_get_one", _table_get_one, methods=["GET"])
+
+
+# ── Knowledge: dedicated KM API (alias, unconfirmed shape) ────────────────────
 
 @app.route("/sn_km_api/knowledge/articles", methods=["GET"])
 def km_api_search():
@@ -248,13 +351,15 @@ def km_api_search():
     if err:
         return err
 
-    query_text = request.args.get("sysparm_search") or request.args.get("query") or ""
-    _, scenario = pick_scenario(query_text)
-
+    query_text = (request.args.get("sysparm_search")
+                  or request.args.get("query")
+                  or request.args.get("sysparm_query")
+                  or "")
+    results = search_articles(query_text, parse_limit())
     return jsonify({
         "result": {
-            "meta": {"count": 1, "queryTime": 8},
-            "articles": [km_api_article(scenario)],
+            "meta": {"count": len(results), "queryTime": 8},
+            "articles": [km_api_article(s) for s in results],
         }
     })
 
@@ -265,7 +370,7 @@ def km_api_get_one(sys_id):
     if err:
         return err
 
-    scenario = ARTICLES_BY_SYS_ID.get(sys_id)
+    scenario = ARTICLES_BY_SYS_ID.get(sys_id) or ARTICLES_BY_NUMBER.get((sys_id or "").upper())
     if scenario is None:
         return jsonify({"error": {"message": "Article not found"}}), 404
 
@@ -282,10 +387,11 @@ def root():
 @app.route("/admin/reload", methods=["POST"])
 def admin_reload():
     """Re-pull fixture JSON from S3 (or local file) without restarting the container."""
-    global SCENARIOS, ARTICLES_BY_SYS_ID
+    global SCENARIOS, ARTICLES_BY_SYS_ID, ARTICLES_BY_NUMBER
     try:
         SCENARIOS = load_fixtures(FIXTURES_PATH)
         ARTICLES_BY_SYS_ID = index_by_sys_id(SCENARIOS)
+        ARTICLES_BY_NUMBER = index_by_number(SCENARIOS)
         source = "s3" if (os.environ.get("FIXTURES_S3_BUCKET") and os.environ.get("FIXTURES_S3_KEY")) else "local"
         return jsonify({"status": "ok", "source": source, "scenarios": sorted(SCENARIOS.keys())})
     except Exception as exc:  # noqa: BLE001

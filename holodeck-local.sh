@@ -15,6 +15,7 @@
 #   ./holodeck.sh splunk          # switch to splunk-mock, no menu
 #   ./holodeck.sh elasticsearch   # switch to elasticsearch-mock, no menu
 #   ./holodeck.sh servicenow      # switch to servicenow-mock, no menu
+#   ./holodeck.sh restart         # restart current service (picks up code edits)
 #   ./holodeck.sh stop            # stop whichever is currently running
 #   ./holodeck.sh status          # show what's currently running
 
@@ -58,6 +59,19 @@ is_running() {
   [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file" 2>/dev/null)" 2>/dev/null
 }
 
+# Whatever is actually LISTENING on a port, regardless of what we recorded.
+#
+# This exists because `$!` captures the setsid/env wrapper, not the python
+# process it execs. Killing the recorded pid could therefore leave python alive
+# still holding the port — which silently serves stale code on the next start
+# (observed: "flask FAILED to start / Address already in use" while the old
+# build kept answering requests).
+listener_pid() {
+  local port="$1"
+  [ -n "$port" ] || return 0
+  lsof -t -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1
+}
+
 current_service() {
   [ -f "$CURRENT_FILE" ] && cat "$CURRENT_FILE" || echo ""
 }
@@ -78,6 +92,19 @@ stop_current() {
     echo "Stopped flask (${current:-unknown}, pid $f_pid)"
   fi
   rm -f "$FLASK_PID_FILE"
+
+  # Belt and braces: kill anything still bound to the port. Without this, a
+  # wrapper/child pid mismatch leaves an orphan serving stale code.
+  local port orphan
+  port=$(port_for "${current:-}")
+  orphan=$(listener_pid "$port")
+  if [ -n "$orphan" ]; then
+    kill "$orphan" 2>/dev/null
+    sleep 1
+    orphan=$(listener_pid "$port")
+    [ -n "$orphan" ] && kill -9 "$orphan" 2>/dev/null
+    echo "Stopped orphaned listener on port $port"
+  fi
 
   if is_running "$NGROK_PID_FILE"; then
     local n_pid
@@ -136,11 +163,17 @@ start_service() {
   else
     ( cd "$dir" && env "${env_vars[@]}" nohup python3 app.py < /dev/null > "$FLASK_LOG_FILE" 2>&1 & echo $! > "$FLASK_PID_FILE" ) < /dev/null > /dev/null 2>&1
   fi
-  sleep 1
-  if is_running "$FLASK_PID_FILE"; then
-    echo "  flask started (pid $(cat "$FLASK_PID_FILE"))"
+  sleep 2
+  # Replace the wrapper pid with the pid actually holding the port, so `stop`
+  # can reliably kill the real server later.
+  local real_pid
+  real_pid=$(listener_pid "$port")
+  if [ -n "$real_pid" ]; then
+    echo "$real_pid" > "$FLASK_PID_FILE"
+    echo "  flask started (pid $real_pid, port $port)"
   else
     echo "  flask FAILED to start — check $FLASK_LOG_FILE"
+    grep -iE "address already in use|error|traceback" "$FLASK_LOG_FILE" 2>/dev/null | tail -3 | sed 's/^/    /'
   fi
 
   if command -v setsid >/dev/null 2>&1; then
@@ -211,9 +244,20 @@ run_main() {
   if [ "${1:-}" != "" ]; then
     case "$1" in
       grafana|arize|splunk|elasticsearch|servicenow) start_service "$1" ;;
+      restart)
+        # Needed after editing a mock's app.py: starting the same service is a
+        # no-op when it is already running, so it would keep serving old code.
+        svc=$(current_service)
+        if [ -z "$svc" ]; then
+          echo "Nothing running to restart."
+        else
+          stop_current
+          sleep 1
+          start_service "$svc"
+        fi ;;
       stop)   stop_current ;;
       status) status ;;
-      *) echo "Usage: $0 [grafana|arize|splunk|elasticsearch|servicenow|stop|status]"; exit 1 ;;
+      *) echo "Usage: $0 [grafana|arize|splunk|elasticsearch|servicenow|restart|stop|status]"; exit 1 ;;
     esac
     exit 0
   fi

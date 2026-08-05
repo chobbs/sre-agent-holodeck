@@ -54,19 +54,40 @@ is honored so the response contains exactly the requested keys.
 Search never returns an empty list. An empty result reads to the SRE Agent as
 "no runbook exists", which is worse for a demo than the general handbook.
 
+*** THE RUNBOOK URL IN THE INCIDENT PAYLOAD MUST CONTAIN sys_id ***
+This was the real cause of the SRE Agent's "fetch failed" reports:
+
+  "could not be fetched — a valid URL with sys_id is required"
+  "Provide a valid ServiceNow KB0010052 URL (with sys_id query parameter)"
+
+custom_details.runbook_url.servicenow had pointed at an API path ending in the
+KB number. The agent validates the shape and refuses it CLIENT-SIDE, so no
+request is made — which is why the logs showed 200 for everything while the
+agent still reported failure, and why the failing scenarios had no log line at
+all. See the article-view routes near the bottom of this file.
+
+When a fetch "fails", check first whether a request reached the server. If it
+did not, no server-side change will help.
+
 *** KEEP ANGLE BRACKETS ESCAPED IN FIXTURE CONTENT ***
-Real ServiceNow KB `content` is HTML, and PagerDuty parses it as such. A
-runbook containing a literal placeholder like `<pod>` is read as an unknown
-HTML tag: the article fetch failed in the SRE Agent ("fetch failed") for the
-ONLY article that had raw angle brackets, while every other article worked and
-our own logs showed a clean 200 for it. Write `&lt;pod&gt;` in fixtures
-instead. `scripts/verify-servicenow.sh` lints for this.
+Real ServiceNow KB `content` is HTML, and PagerDuty parses it as such, so a
+literal placeholder like `<pod>` reads as an unknown tag. Write `&lt;pod&gt;`
+instead; `scripts/verify-servicenow.sh` lints for it.
+
+NOTE: this was originally believed to cause the fetch failures above. It did
+not — an article with no angle brackets failed the same way. The escaping is
+kept because it is correct for HTML content, not because it fixed anything.
 
 Endpoints:
   POST /oauth_token.do                                 OAuth2 password grant
   GET  /api/now/table/sn_km_mr_st_kb_knowledge[/<id>]  CONFIRMED — PD searches here
   GET  /api/now/table/kb_knowledge[/<id>]              CONFIRMED — PD fetches
                                                        single articles here
+  GET  /kb_view.do?sys_id=<id>                         CONFIRMED — article-view
+                                                       URL the agent accepts in
+                                                       runbook_url (no auth)
+  GET  /kb?id=kb_article_view&sys_id=<id>              alias, Service Portal
+  GET  /nav_to.do?uri=kb_knowledge.do?sys_id=<id>      alias, classic UI
   GET  /sn_km_api/knowledge/articles[/<id>]            alias, never observed
   POST /admin/reload                                   hot-reload from S3
 

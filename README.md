@@ -210,14 +210,21 @@ read -rs "PD_ROUTING_KEY?PagerDuty routing key: " && export PD_ROUTING_KEY   # z
 ```
 
 The optional second argument is the ServiceNow base URL. When supplied, the
-payload gains a `custom_details.runbook_url.servicenow` pointing at that
-scenario's exact KB article — PagerDuty's documented way to point the agent at
-a specific runbook when it cannot infer one from the payload.
+payload gains a `custom_details.runbook_url.servicenow` — PagerDuty's documented
+way to point the agent at a specific runbook when it cannot infer one from the
+payload.
 
-The KB number is **always** included as `custom_details.kb_article` regardless.
-That matters: without it the agent may search, decide nothing matched, and ask
-the responder to supply an article number. With it, the agent fetches the
-article directly — confirmed working for `service-mesh-mtls` and `edge-waf-cdn`.
+**That URL must contain `sys_id` as a query parameter**, so the script emits
+`/kb_view.do?sys_id=<sys_id>&sysparm_article=<KB>`. Anything else is rejected by
+the agent before it makes a request — see [The runbook URL must contain
+sys_id](#the-runbook-url-must-contain-sys_id).
+
+The KB number and `sys_id` are **always** included as `custom_details.kb_article`
+and `custom_details.kb_sys_id` regardless. Without them the agent may search,
+decide nothing matched, and ask the responder to supply an article number.
+
+Both values are read from the fixtures at run time, so the script cannot drift
+out of sync with the articles the mock actually serves.
 
 Creating the incident does **not** by itself invoke the SRE Agent. Either open
 the incident and use the **SRE Agent** tab, or configure an Incident Workflow
@@ -236,10 +243,12 @@ The script prints a resolve command so test incidents do not pile up.
 POST /oauth_token.do                              from 44.242.69.192   token grant
 GET  /api/now/table/sn_km_mr_st_kb_knowledge?...  from 54.213.187.133  search
 GET  /api/now/table/kb_knowledge/<sys_id>         from 54.213.187.133  fetch article
+GET  /kb_view.do?sys_id=<sys_id>                                       runbook URL
 ```
 
-The SRE Agent successfully returned runbook steps to the responder for
-`checkout-api`, `service-mesh-mtls` and `edge-waf-cdn` incidents.
+The SRE Agent returns runbook steps to the responder for every scenario. Getting
+there took four rounds of debugging; the two subsections below are the ones worth
+reading before changing anything.
 
 ### Why this works where Dynatrace did not
 The Dynatrace attempt failed because PagerDuty sends the OAuth token request to `sso.dynatrace.com` — a host shared by every Dynatrace SaaS tenant — rather than to the Environment URL you enter. No request from PagerDuty ever reached that mock.
@@ -261,12 +270,44 @@ Three non-obvious details, all of which the mock now handles:
 
 1. **Table name.** Searching uses `sn_km_mr_st_kb_knowledge`, not the generic `kb_knowledge` table. (`kb_knowledge` *is* used, but only for fetching one article by `sys_id` — see Endpoints.)
 2. **`sysparm_query=number=<terms>` is not an equality match.** PagerDuty packs free-text search terms after `number=`. Comparing that against the `number` field matches nothing. The mock strips the `field=` prefix and ranks articles by weighted term overlap (scenario key > title > body); an explicit `KB…` number still wins outright.
-3. **Field names.** PagerDuty asks for `content`, not `text`, plus `author`, `sys_updated_on` and `embedded_media`. `sysparm_fields` is honored, so the response contains exactly the requested keys in the requested order.
+3. **Field names.** PagerDuty asks for `content`, not `text`, plus `author`, `sys_updated_on` and `embedded_media`. `sysparm_fields` is honored for searches, so the response contains exactly the requested keys in the requested order. Single-article fetches are the exception — see below.
+
+PagerDuty uses a **different field set** for a single-article fetch:
+`kb_knowledge_base,workflow_state,sys_updated_on,sys_updated_by`. Honoring that
+strictly returns metadata and **no runbook text**, so the mock deliberately adds
+`sys_id`, `number`, `short_description` and `content` to every single-article
+fetch even when they are not requested. That is a knowing deviation from real
+ServiceNow: a mock that hands back an unusable response is worse than one that
+over-returns, and extra JSON keys are harmless.
 
 Two deliberate behaviours in the search results, both learned from watching the agent react:
 
 - **Never return an empty list.** An empty result reads to the agent as "no runbook exists", so an unmatched query leads with the general handbook instead.
 - **Prune weak matches.** Returning every article that shares one common word buries the answer. The agent was observed receiving 7 articles — with the correct runbook ranked *first* — and still replying "returned 7 articles but none matched", because it does not treat array order as relevance. Results are now capped at 3 and filtered to within 50% of the top score, which in practice returns 1–2 articles per query.
+
+### The runbook URL must contain sys_id
+This was the real cause of the "fetch failed" messages, and it took four rounds to find because **the failure happens entirely inside PagerDuty**. The agent's own words:
+
+> The ServiceNow runbook (KB0010052) could not be fetched — a valid URL with sys_id is required.
+> Provide a valid ServiceNow KB0010052 URL (with sys_id query parameter)
+
+The payload had been pointing `runbook_url.servicenow` at an API path ending in the KB number:
+
+```
+.../api/now/table/sn_km_mr_st_kb_knowledge/KB0010052      ← rejected, no sys_id
+.../kb_view.do?sys_id=e5f6…a705&sysparm_article=KB0010052  ← accepted
+```
+
+The agent validates the URL shape and **refuses it client-side without issuing a request**. Every symptom follows from that, and each one is misleading on its own:
+
+- Our logs showed HTTP 200 for every request, yet the agent reported a failed fetch.
+- The failing scenarios had **no log line at all** — there was nothing to debug server-side.
+- Supplying the KB number by hand worked, because the agent then searched, took `sys_id` from the search response, and fetched with that.
+- The same scenario appeared to pass and fail across runs, depending on whether it went via search or via `runbook_url`.
+
+The mock therefore serves the real ServiceNow article-view shapes, all keyed by `sys_id`, returning an article page or JSON depending on the `Accept` header. They are intentionally **not** bearer-protected, because a document-link fetch may not carry the connector's OAuth token, and the fixtures are public demo runbooks.
+
+**Debugging lesson worth keeping:** two earlier "fixes" — escaping angle brackets in article content, and adding the body to fetch responses — were aimed at this symptom and neither addressed it. Both are defensible on their own merits and were kept, but the actual diagnosis only arrived once the agent stated what it wanted. When a fetch fails, check first whether a request reached the server at all; if it did not, the problem is upstream and no server-side change will help.
 
 ### DNS — done, but read this before adding the next mock
 The record is in place:
@@ -300,7 +341,14 @@ PagerDuty uses **two different tables**, and both are required:
 | `POST /oauth_token.do` | **Confirmed** — OAuth2 password grant |
 | `GET /api/now/table/sn_km_mr_st_kb_knowledge` | **Confirmed** — PD *searches* here |
 | `GET /api/now/table/kb_knowledge/<sys_id>` | **Confirmed** — PD *fetches a single article* here |
+| `GET /kb_view.do?sys_id=<id>` | **Confirmed** — the article-view URL shape the agent accepts in `runbook_url`. Also takes `sysparm_article=KB…` |
+| `GET /kb?id=kb_article_view&sys_id=<id>` | Alias — Service Portal shape |
+| `GET /nav_to.do?uri=kb_knowledge.do?sys_id=<id>` | Alias — classic UI shape |
 | `GET /sn_km_api/knowledge/articles[/<id>]` | Alias — dedicated KM API, shape is a guess, never observed in use |
+
+The article-view routes return HTML by default and JSON when `Accept:
+application/json` is sent, since it is unconfirmed which the agent expects. They
+require no bearer token.
 
 Do not "clean up" `kb_knowledge` as unused. Search goes to the Knowledge
 Management search table, but once the agent picks an article it fetches it by

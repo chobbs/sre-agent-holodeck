@@ -18,8 +18,9 @@
 #
 # It also lints the fixtures for raw angle brackets. ServiceNow KB content is
 # HTML and PagerDuty parses it as such, so a literal `<pod>` placeholder reads
-# as an unknown tag and the article fetch fails in the SRE Agent even though we
-# return a clean 200. Write `&lt;pod&gt;` instead.
+# as an unknown tag. Write `&lt;pod&gt;` instead. (This was once thought to cause
+# the agent's "fetch failed" reports; it did not — that was a runbook_url
+# missing sys_id. The lint is kept because escaping is correct regardless.)
 #
 # Expected article numbers are read from the fixtures, so this cannot drift out
 # of sync with the data.
